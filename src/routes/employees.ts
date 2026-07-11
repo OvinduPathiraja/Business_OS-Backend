@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { createServiceClient } from '../lib/supabase.js';
 import type { Bindings } from '../lib/supabase.js';
 import { requireUser, requireOrg } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
@@ -92,23 +93,48 @@ app.post('/api/employees/:id/remove', validate('param', uuidParam), async (c) =>
   return c.body(null, 204);
 });
 
-// Directory-only for now — see the TODO in frontend/src/lib/employees.ts
-// for why this doesn't yet create a real account.
+// Creates the employee_invites staging row first (still via the caller's
+// RLS-scoped client — employees.add still gates this exactly as before),
+// then a real Supabase Auth account via the Admin API. The `handle_new_user`
+// trigger (supabase/migrations/20260711120000_invite_attach_on_signup.sql)
+// finds this row by email the instant the new auth.users row is created and
+// attaches organization_id/role_id/phone/department atomically, then deletes
+// it — so if the Admin API call fails, the staging row is rolled back here
+// (compensating delete) rather than left dangling with no invite ever sent.
 app.post('/api/employees/invites', validate('json', inviteBody), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
   const b = c.req.valid('json');
-  const { error } = await auth.client.from('employee_invites').insert({
-    organization_id: auth.organizationId,
-    invited_by: auth.userId,
-    full_name: b.fullName,
-    email: b.email,
-    phone: b.phone || null,
-    department: b.department || null,
-    role_id: b.roleId,
-  });
+  const { data: invite, error } = await auth.client
+    .from('employee_invites')
+    .insert({
+      organization_id: auth.organizationId,
+      invited_by: auth.userId,
+      full_name: b.fullName,
+      email: b.email,
+      phone: b.phone || null,
+      department: b.department || null,
+      role_id: b.roleId,
+    })
+    .select('id')
+    .single();
   if (error) return sendPgError(c, error);
+
+  const svc = createServiceClient(c.env);
+  const { error: inviteError } = await svc.auth.admin.inviteUserByEmail(b.email, {
+    data: { full_name: b.fullName },
+    redirectTo: c.env.PUBLIC_APP_URL,
+  });
+  if (inviteError) {
+    await auth.client.from('employee_invites').delete().eq('id', invite.id);
+    const alreadyRegistered = /already registered|already exists/i.test(inviteError.message);
+    return c.json(
+      { error: alreadyRegistered ? 'That email already has an account.' : inviteError.message, code: 'INVITE_FAILED' },
+      alreadyRegistered ? 409 : 500
+    );
+  }
+
   return c.body(null, 201);
 });
 

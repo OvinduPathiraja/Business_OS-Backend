@@ -12,6 +12,12 @@ SUPABASE_ANON_KEY=sb_publishable_...
 
 # Service-role key — Settings -> API in Supabase. Full admin access, bypasses
 # RLS entirely. Only used locally for testing; in production this must be a
-# `wrangler secret put SUPABASE_SERVICE_ROLE_KEY`, never a plain var. Not
-# used by any route yet — reserved for real employee-invite logic later.
+# `wrangler secret put SUPABASE_SERVICE_ROLE_KEY`, never a plain var. Used by
+# the employee invite route to call the Supabase Admin API.
 SUPABASE_SERVICE_ROLE_KEY=
+
+# Local dev frontend URL (e.g. wherever `expo start --web` serves on this
+# machine) — used as `redirectTo` for employee invite emails locally. In
+# production this is a plain [vars] entry in wrangler.toml instead, since
+# it's not sensitive.
+PUBLIC_APP_URL=http://localhost:19006

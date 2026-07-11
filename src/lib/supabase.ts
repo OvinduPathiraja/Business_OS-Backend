@@ -8,6 +8,10 @@ export type Bindings = {
   SUPABASE_ANON_KEY: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
   ALLOWED_ORIGIN: string;
+  // Deployed frontend URL — passed as `redirectTo` for admin.inviteUserByEmail
+  // so the invite email's link lands back on this app. Must be allow-listed
+  // in Supabase Dashboard -> Authentication -> URL Configuration.
+  PUBLIC_APP_URL: string;
   RATE_LIMITER: RateLimit;
 };
 
@@ -22,9 +26,10 @@ export function createUserClient(env: Bindings, accessToken: string) {
   });
 }
 
-// Bypasses RLS entirely via the service-role key. Not called by any route
-// yet (reserved for privileged operations added later, e.g. the Supabase
-// Admin API for real employee invites).
+// Bypasses RLS entirely via the service-role key. Used by the employee
+// invite route (backend/src/routes/employees.ts) to call the Supabase Admin
+// API — the one operation that genuinely needs to create an auth.users row
+// on another person's behalf.
 export function createServiceClient(env: Bindings) {
   if (!env.SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error('SUPABASE_SERVICE_ROLE_KEY must be set to use the service client.');

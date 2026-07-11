@@ -17,3 +17,9 @@ period = 60
 # SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY / ALLOWED_ORIGIN
 # are all set via `wrangler secret put <NAME>` (production) or `.dev.vars`
 # (local dev, gitignored) — not here, so this file stays safe to commit.
+
+# Not sensitive (it's the app's own public URL) — a plain var instead of a
+# secret. Used as the `redirectTo` for employee invite emails; must also be
+# allow-listed in Supabase Dashboard -> Authentication -> URL Configuration.
+[vars]
+PUBLIC_APP_URL = "https://businessos.ovindupathiraja08.workers.dev"
