@@ -129,9 +129,15 @@ app.post('/api/employees/invites', validate('json', inviteBody), async (c) => {
   if (inviteError) {
     await auth.client.from('employee_invites').delete().eq('id', invite.id);
     const alreadyRegistered = /already registered|already exists/i.test(inviteError.message);
+    const rateLimited = /rate limit/i.test(inviteError.message);
+    const message = alreadyRegistered
+      ? 'That email already has an account.'
+      : rateLimited
+        ? 'Too many invite emails sent recently — wait a few minutes and try again.'
+        : inviteError.message;
     return c.json(
-      { error: alreadyRegistered ? 'That email already has an account.' : inviteError.message, code: 'INVITE_FAILED' },
-      alreadyRegistered ? 409 : 500
+      { error: message, code: 'INVITE_FAILED' },
+      alreadyRegistered ? 409 : rateLimited ? 429 : 500
     );
   }
 
