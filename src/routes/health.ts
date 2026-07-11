@@ -1,5 +1,8 @@
-import type { FastifyInstance } from 'fastify';
+import { Hono } from 'hono';
+import type { Bindings } from '../lib/supabase.js';
 
-export default async function healthRoutes(app: FastifyInstance) {
-  app.get('/health', async () => ({ ok: true }));
-}
+const app = new Hono<{ Bindings: Bindings }>();
+
+app.get('/health', (c) => c.json({ ok: true }));
+
+export default app;

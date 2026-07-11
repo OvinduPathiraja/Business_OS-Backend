@@ -1,8 +1,9 @@
-import type { FastifyInstance } from 'fastify';
+import { Hono } from 'hono';
 import { z } from 'zod';
-import type { ZodTypeProvider } from 'fastify-type-provider-zod';
+import type { Bindings } from '../lib/supabase.js';
 import { requireUser } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
+import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
 
 const INVOICE_STATUSES = ['draft', 'sent', 'paid', 'overdue', 'void', 'refunded'] as const;
@@ -39,85 +40,84 @@ function invoiceFromRow(row: any) {
   };
 }
 
-export default async function financeRoutes(app: FastifyInstance) {
-  const server = app.withTypeProvider<ZodTypeProvider>();
+const app = new Hono<{ Bindings: Bindings }>();
 
-  server.get('/api/invoices', { schema: { querystring: listQuery } }, async (request, reply) => {
-    const auth = await requireUser(request, reply);
-    if (!auth) return;
+app.get('/api/invoices', validate('query', listQuery), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
 
-    let query = auth.client.from('invoices').select(INVOICE_SELECT).order('created_at', { ascending: false });
-    const { search, status, limit, offset } = request.query;
-    if (search) query = query.or(`invoice_number.ilike.%${search}%,customer_name.ilike.%${search}%`);
-    if (status) query = query.eq('status', status);
-    query = query.range(offset, offset + limit - 1);
+  let query = auth.client.from('invoices').select(INVOICE_SELECT).order('created_at', { ascending: false });
+  const { search, status, limit, offset } = c.req.valid('query');
+  if (search) query = query.or(`invoice_number.ilike.%${search}%,customer_name.ilike.%${search}%`);
+  if (status) query = query.eq('status', status);
+  query = query.range(offset, offset + limit - 1);
 
-    const { data, error } = await query;
-    if (error) return sendPgError(reply, error);
-    reply.send((data ?? []).map(invoiceFromRow));
+  const { data, error } = await query;
+  if (error) return sendPgError(c, error);
+  return c.json((data ?? []).map(invoiceFromRow));
+});
+
+app.patch('/api/invoices/:id', validate('param', uuidParam), validate('json', updateBody), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const b = c.req.valid('json');
+  const { data, error } = await auth.client
+    .from('invoices')
+    .update({
+      customer_id: b.customerId, customer_name: b.customerName, invoice_number: b.invoiceNumber,
+      status: b.status, issue_date: b.issueDate, due_date: b.dueDate, subtotal: b.subtotal, tax: b.tax,
+      total: b.subtotal + b.tax, notes: b.notes || null, updated_at: new Date().toISOString(),
+    })
+    .eq('id', c.req.valid('param').id)
+    .select(INVOICE_SELECT)
+    .single();
+  if (error) return sendPgError(c, error);
+  return c.json(invoiceFromRow(data));
+});
+
+app.delete('/api/invoices', validate('json', bulkIdsBody), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const { error } = await auth.client.from('invoices').delete().in('id', c.req.valid('json').ids);
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
+app.get('/api/invoices/:id/payments', validate('param', uuidParam), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const { data, error } = await auth.client
+    .from('payments')
+    .select('id, invoice_id, amount, method, paid_at, notes')
+    .eq('invoice_id', c.req.valid('param').id)
+    .order('paid_at', { ascending: false });
+  if (error) return sendPgError(c, error);
+  return c.json((data ?? []).map((r: any) => ({
+    id: r.id, invoiceId: r.invoice_id, amount: Number(r.amount), method: r.method, paidAt: r.paid_at, notes: r.notes,
+  })));
+});
+
+// Wraps the record_payment() RPC — locks the invoice row (SELECT ... FOR
+// UPDATE) so two concurrent payments can't both read a stale amount_paid,
+// and is gated on finance.update (owner/admin), matching add_finance.sql's
+// original documented intent that editing existing records is owner/admin-
+// only. This is a disclosed, intentional behavior change — see ROADMAP.
+app.post('/api/invoices/:id/payments', validate('param', uuidParam), validate('json', recordPaymentBody), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const body = c.req.valid('json');
+  const { data, error } = await auth.client.rpc('record_payment', {
+    p_invoice_id: c.req.valid('param').id,
+    p_amount: body.amount,
+    p_method: body.method,
+    p_notes: body.notes || null,
   });
+  if (error) return sendPgError(c, error);
+  return c.json({ amountPaid: data.amountPaid, status: data.status }, 201);
+});
 
-  server.patch('/api/invoices/:id', { schema: { params: uuidParam, body: updateBody } }, async (request, reply) => {
-    const auth = await requireUser(request, reply);
-    if (!auth) return;
-
-    const b = request.body;
-    const { data, error } = await auth.client
-      .from('invoices')
-      .update({
-        customer_id: b.customerId, customer_name: b.customerName, invoice_number: b.invoiceNumber,
-        status: b.status, issue_date: b.issueDate, due_date: b.dueDate, subtotal: b.subtotal, tax: b.tax,
-        total: b.subtotal + b.tax, notes: b.notes || null, updated_at: new Date().toISOString(),
-      })
-      .eq('id', request.params.id)
-      .select(INVOICE_SELECT)
-      .single();
-    if (error) return sendPgError(reply, error);
-    reply.send(invoiceFromRow(data));
-  });
-
-  server.delete('/api/invoices', { schema: { body: bulkIdsBody } }, async (request, reply) => {
-    const auth = await requireUser(request, reply);
-    if (!auth) return;
-
-    const { error } = await auth.client.from('invoices').delete().in('id', request.body.ids);
-    if (error) return sendPgError(reply, error);
-    reply.code(204).send();
-  });
-
-  server.get('/api/invoices/:id/payments', { schema: { params: uuidParam } }, async (request, reply) => {
-    const auth = await requireUser(request, reply);
-    if (!auth) return;
-
-    const { data, error } = await auth.client
-      .from('payments')
-      .select('id, invoice_id, amount, method, paid_at, notes')
-      .eq('invoice_id', request.params.id)
-      .order('paid_at', { ascending: false });
-    if (error) return sendPgError(reply, error);
-    reply.send((data ?? []).map((r: any) => ({
-      id: r.id, invoiceId: r.invoice_id, amount: Number(r.amount), method: r.method, paidAt: r.paid_at, notes: r.notes,
-    })));
-  });
-
-  // Wraps the new record_payment() RPC (added in
-  // supabase/migrations/20260710120000_transactional_write_rpcs.sql) —
-  // locks the invoice row (SELECT ... FOR UPDATE) so two concurrent
-  // payments can't both read a stale amount_paid, and is gated on
-  // finance.update (owner/admin), matching add_finance.sql's original
-  // documented intent that editing existing records is owner/admin-only.
-  // This is a disclosed, intentional behavior change — see ROADMAP.
-  server.post('/api/invoices/:id/payments', { schema: { params: uuidParam, body: recordPaymentBody } }, async (request, reply) => {
-    const auth = await requireUser(request, reply);
-    if (!auth) return;
-
-    const { data, error } = await auth.client.rpc('record_payment', {
-      p_invoice_id: request.params.id,
-      p_amount: request.body.amount,
-      p_method: request.body.method,
-      p_notes: request.body.notes || null,
-    });
-    if (error) return sendPgError(reply, error);
-    reply.code(201).send({ amountPaid: data.amountPaid, status: data.status });
-  });
-}
+export default app;

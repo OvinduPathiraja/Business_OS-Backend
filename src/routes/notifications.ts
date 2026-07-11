@@ -1,8 +1,9 @@
-import type { FastifyInstance } from 'fastify';
+import { Hono } from 'hono';
 import { z } from 'zod';
-import type { ZodTypeProvider } from 'fastify-type-provider-zod';
+import type { Bindings } from '../lib/supabase.js';
 import { requireOrg } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
+import { validate } from '../lib/validate.js';
 import { uuidParam } from '../lib/schemas.js';
 
 const listQuery = z.object({ limit: z.coerce.number().int().positive().max(100).optional().default(30) });
@@ -22,43 +23,43 @@ function fromRow(row: any) {
 }
 
 // Only list/mark-read move here — subscribeToNotifications() stays on the
-// direct Supabase Realtime client (see ROADMAP: rebuilding live push
-// through Fastify needs a WebSocket/SSE layer, out of scope for this pass).
-export default async function notificationsRoutes(app: FastifyInstance) {
-  const server = app.withTypeProvider<ZodTypeProvider>();
+// direct Supabase Realtime client (rebuilding live push through Workers
+// would need a Durable Object + WebSocket layer, out of scope for this pass).
+const app = new Hono<{ Bindings: Bindings }>();
 
-  server.get('/api/notifications', { schema: { querystring: listQuery } }, async (request, reply) => {
-    const auth = await requireOrg(request, reply);
-    if (!auth) return;
+app.get('/api/notifications', validate('query', listQuery), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
 
-    const { data, error } = await auth.client
-      .from('notifications')
-      .select(SELECT)
-      .order('created_at', { ascending: false })
-      .limit(request.query.limit);
-    if (error) return sendPgError(reply, error);
-    reply.send((data ?? []).map(fromRow));
-  });
+  const { data, error } = await auth.client
+    .from('notifications')
+    .select(SELECT)
+    .order('created_at', { ascending: false })
+    .limit(c.req.valid('query').limit);
+  if (error) return sendPgError(c, error);
+  return c.json((data ?? []).map(fromRow));
+});
 
-  server.patch('/api/notifications/:id/read', { schema: { params: uuidParam } }, async (request, reply) => {
-    const auth = await requireOrg(request, reply);
-    if (!auth) return;
+app.patch('/api/notifications/:id/read', validate('param', uuidParam), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
 
-    const { error } = await auth.client.from('notifications').update({ read: true }).eq('id', request.params.id);
-    if (error) return sendPgError(reply, error);
-    reply.code(204).send();
-  });
+  const { error } = await auth.client.from('notifications').update({ read: true }).eq('id', c.req.valid('param').id);
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
 
-  server.patch('/api/notifications/read-all', async (request, reply) => {
-    const auth = await requireOrg(request, reply);
-    if (!auth) return;
+app.patch('/api/notifications/read-all', async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
 
-    const { error } = await auth.client
-      .from('notifications')
-      .update({ read: true })
-      .eq('organization_id', auth.organizationId)
-      .eq('read', false);
-    if (error) return sendPgError(reply, error);
-    reply.code(204).send();
-  });
-}
+  const { error } = await auth.client
+    .from('notifications')
+    .update({ read: true })
+    .eq('organization_id', auth.organizationId)
+    .eq('read', false);
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
+export default app;

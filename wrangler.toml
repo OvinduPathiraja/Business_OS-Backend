@@ -1,0 +1,19 @@
+name = "business-os-backend"
+main = "src/index.ts"
+compatibility_date = "2026-07-11"
+compatibility_flags = ["nodejs_compat"]
+
+# Edge-distributed by default — correct across the whole Workers fleet with
+# no shared store needed, unlike the old in-memory Fastify rate limiter this
+# replaces. `namespace_id` just needs to be a positive integer unique to this
+# account; adjust if Cloudflare's current tooling wants a different value.
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "1001"
+[ratelimits.simple]
+limit = 300
+period = 60
+
+# SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY / ALLOWED_ORIGIN
+# are all set via `wrangler secret put <NAME>` (production) or `.dev.vars`
+# (local dev, gitignored) — not here, so this file stays safe to commit.

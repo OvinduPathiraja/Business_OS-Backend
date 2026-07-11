@@ -1,0 +1,17 @@
+# Copy to .dev.vars for local `wrangler dev` (dotenv-format, gitignored).
+# In production, set these with `wrangler secret put <NAME>` instead —
+# never commit real values, especially SUPABASE_SERVICE_ROLE_KEY.
+
+# Comma-separated list of allowed origins for CORS (the deployed app's URL).
+# Leave unset to allow all origins during local development.
+ALLOWED_ORIGIN=
+
+# Same Supabase project as the app's EXPO_PUBLIC_SUPABASE_URL/ANON_KEY.
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_ANON_KEY=sb_publishable_...
+
+# Service-role key — Settings -> API in Supabase. Full admin access, bypasses
+# RLS entirely. Only used locally for testing; in production this must be a
+# `wrangler secret put SUPABASE_SERVICE_ROLE_KEY`, never a plain var. Not
+# used by any route yet — reserved for real employee-invite logic later.
+SUPABASE_SERVICE_ROLE_KEY=

@@ -1,8 +1,9 @@
-import type { FastifyInstance } from 'fastify';
+import { Hono } from 'hono';
 import { z } from 'zod';
-import type { ZodTypeProvider } from 'fastify-type-provider-zod';
+import type { Bindings } from '../lib/supabase.js';
 import { requireUser, requireOrg } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
+import { validate } from '../lib/validate.js';
 import { uuidParam } from '../lib/schemas.js';
 
 const inviteBody = z.object({
@@ -43,81 +44,81 @@ function inviteFromRow(row: any) {
   };
 }
 
-export default async function employeesRoutes(app: FastifyInstance) {
-  const server = app.withTypeProvider<ZodTypeProvider>();
+const app = new Hono<{ Bindings: Bindings }>();
 
-  // A single logical list merging real members and pending invites, done
-  // server-side (was 2 client round trips, frontend/src/lib/employees.ts
-  // previously merged them in the browser).
-  server.get('/api/employees', async (request, reply) => {
-    const auth = await requireUser(request, reply);
-    if (!auth) return;
+// A single logical list merging real members and pending invites, done
+// server-side (was 2 client round trips, frontend/src/lib/employees.ts
+// previously merged them in the browser).
+app.get('/api/employees', async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
 
-    const [profiles, invites] = await Promise.all([
-      auth.client.from('profiles').select(PROFILE_SELECT).not('role_id', 'is', null).order('created_at', { ascending: false }),
-      auth.client.from('employee_invites').select(INVITE_SELECT).order('invited_at', { ascending: false }),
-    ]);
-    if (profiles.error) return sendPgError(reply, profiles.error);
-    if (invites.error) return sendPgError(reply, invites.error);
-    reply.send([...(profiles.data ?? []).map(memberFromRow), ...(invites.data ?? []).map(inviteFromRow)]);
+  const [profiles, invites] = await Promise.all([
+    auth.client.from('profiles').select(PROFILE_SELECT).not('role_id', 'is', null).order('created_at', { ascending: false }),
+    auth.client.from('employee_invites').select(INVITE_SELECT).order('invited_at', { ascending: false }),
+  ]);
+  if (profiles.error) return sendPgError(c, profiles.error);
+  if (invites.error) return sendPgError(c, invites.error);
+  return c.json([...(profiles.data ?? []).map(memberFromRow), ...(invites.data ?? []).map(inviteFromRow)]);
+});
+
+app.patch('/api/employees/:id', validate('param', uuidParam), validate('json', updateBody), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const b = c.req.valid('json');
+  const patch: Record<string, any> = {};
+  if (b.phone !== undefined) patch.phone = b.phone || null;
+  if (b.department !== undefined) patch.department = b.department || null;
+  if (b.roleId !== undefined) patch.role_id = b.roleId;
+  if (b.status !== undefined) patch.status = b.status;
+
+  const { error } = await auth.client.from('profiles').update(patch).eq('id', c.req.valid('param').id);
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
+// Soft-remove — status = 'removed' cuts off data access (see the
+// current_organization_id() fail-closed change) but doesn't revoke an
+// already-issued session token. Deliberately its own action (not a
+// generic PATCH ...status) matching how EmployeeUpdateInput's status
+// union excludes 'removed'.
+app.post('/api/employees/:id/remove', validate('param', uuidParam), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const { error } = await auth.client.from('profiles').update({ status: 'removed' }).eq('id', c.req.valid('param').id);
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
+// Directory-only for now — see the TODO in frontend/src/lib/employees.ts
+// for why this doesn't yet create a real account.
+app.post('/api/employees/invites', validate('json', inviteBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const b = c.req.valid('json');
+  const { error } = await auth.client.from('employee_invites').insert({
+    organization_id: auth.organizationId,
+    invited_by: auth.userId,
+    full_name: b.fullName,
+    email: b.email,
+    phone: b.phone || null,
+    department: b.department || null,
+    role_id: b.roleId,
   });
+  if (error) return sendPgError(c, error);
+  return c.body(null, 201);
+});
 
-  server.patch('/api/employees/:id', { schema: { params: uuidParam, body: updateBody } }, async (request, reply) => {
-    const auth = await requireUser(request, reply);
-    if (!auth) return;
+app.delete('/api/employees/invites/:id', validate('param', uuidParam), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
 
-    const b = request.body;
-    const patch: Record<string, any> = {};
-    if (b.phone !== undefined) patch.phone = b.phone || null;
-    if (b.department !== undefined) patch.department = b.department || null;
-    if (b.roleId !== undefined) patch.role_id = b.roleId;
-    if (b.status !== undefined) patch.status = b.status;
+  const { error } = await auth.client.from('employee_invites').delete().eq('id', c.req.valid('param').id);
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
 
-    const { error } = await auth.client.from('profiles').update(patch).eq('id', request.params.id);
-    if (error) return sendPgError(reply, error);
-    reply.code(204).send();
-  });
-
-  // Soft-remove — status = 'removed' cuts off data access (see the
-  // current_organization_id() fail-closed change) but doesn't revoke an
-  // already-issued session token. Deliberately its own action (not a
-  // generic PATCH ...status) matching how EmployeeUpdateInput's status
-  // union excludes 'removed'.
-  server.post('/api/employees/:id/remove', { schema: { params: uuidParam } }, async (request, reply) => {
-    const auth = await requireUser(request, reply);
-    if (!auth) return;
-
-    const { error } = await auth.client.from('profiles').update({ status: 'removed' }).eq('id', request.params.id);
-    if (error) return sendPgError(reply, error);
-    reply.code(204).send();
-  });
-
-  // Directory-only for now — see the TODO in frontend/src/lib/employees.ts
-  // for why this doesn't yet create a real account.
-  server.post('/api/employees/invites', { schema: { body: inviteBody } }, async (request, reply) => {
-    const auth = await requireOrg(request, reply);
-    if (!auth) return;
-
-    const b = request.body;
-    const { error } = await auth.client.from('employee_invites').insert({
-      organization_id: auth.organizationId,
-      invited_by: auth.userId,
-      full_name: b.fullName,
-      email: b.email,
-      phone: b.phone || null,
-      department: b.department || null,
-      role_id: b.roleId,
-    });
-    if (error) return sendPgError(reply, error);
-    reply.code(201).send();
-  });
-
-  server.delete('/api/employees/invites/:id', { schema: { params: uuidParam } }, async (request, reply) => {
-    const auth = await requireUser(request, reply);
-    if (!auth) return;
-
-    const { error } = await auth.client.from('employee_invites').delete().eq('id', request.params.id);
-    if (error) return sendPgError(reply, error);
-    reply.code(204).send();
-  });
-}
+export default app;

@@ -1,8 +1,9 @@
-import type { FastifyInstance } from 'fastify';
+import { Hono } from 'hono';
 import { z } from 'zod';
-import type { ZodTypeProvider } from 'fastify-type-provider-zod';
+import type { Bindings } from '../lib/supabase.js';
 import { requireOrg } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
+import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
 
 const LIFECYCLE_STAGES = ['lead', 'active', 'vip', 'dormant', 'archived'] as const;
@@ -34,71 +35,73 @@ function fromRow(row: any) {
   };
 }
 
-export default async function customersRoutes(app: FastifyInstance) {
-  const server = app.withTypeProvider<ZodTypeProvider>();
+const app = new Hono<{ Bindings: Bindings }>();
 
-  server.get('/api/customers', { schema: { querystring: listQuery } }, async (request, reply) => {
-    const auth = await requireOrg(request, reply);
-    if (!auth) return;
+app.get('/api/customers', validate('query', listQuery), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
 
-    let query = auth.client.from('customers').select(SELECT).order('created_at', { ascending: false });
-    const { search, lifecycleStage, limit, offset } = request.query;
-    if (search) query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%`);
-    if (lifecycleStage) query = query.eq('lifecycle_stage', lifecycleStage);
-    query = query.range(offset, offset + limit - 1);
+  let query = auth.client.from('customers').select(SELECT).order('created_at', { ascending: false });
+  const { search, lifecycleStage, limit, offset } = c.req.valid('query');
+  if (search) query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%`);
+  if (lifecycleStage) query = query.eq('lifecycle_stage', lifecycleStage);
+  query = query.range(offset, offset + limit - 1);
 
-    const { data, error } = await query;
-    if (error) return sendPgError(reply, error);
-    reply.send((data ?? []).map(fromRow));
-  });
+  const { data, error } = await query;
+  if (error) return sendPgError(c, error);
+  return c.json((data ?? []).map(fromRow));
+});
 
-  server.post('/api/customers', { schema: { body: customerBody } }, async (request, reply) => {
-    const auth = await requireOrg(request, reply);
-    if (!auth) return;
+app.post('/api/customers', validate('json', customerBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
 
-    const { data, error } = await auth.client
-      .from('customers')
-      .insert({
-        organization_id: auth.organizationId,
-        name: request.body.name,
-        email: request.body.email || null,
-        phone: request.body.phone || null,
-        lifecycle_stage: request.body.lifecycleStage ?? 'lead',
-        notes: request.body.notes || null,
-      })
-      .select(SELECT)
-      .single();
-    if (error) return sendPgError(reply, error);
-    reply.code(201).send(fromRow(data));
-  });
+  const body = c.req.valid('json');
+  const { data, error } = await auth.client
+    .from('customers')
+    .insert({
+      organization_id: auth.organizationId,
+      name: body.name,
+      email: body.email || null,
+      phone: body.phone || null,
+      lifecycle_stage: body.lifecycleStage ?? 'lead',
+      notes: body.notes || null,
+    })
+    .select(SELECT)
+    .single();
+  if (error) return sendPgError(c, error);
+  return c.json(fromRow(data), 201);
+});
 
-  server.patch('/api/customers/:id', { schema: { params: uuidParam, body: customerBody } }, async (request, reply) => {
-    const auth = await requireOrg(request, reply);
-    if (!auth) return;
+app.patch('/api/customers/:id', validate('param', uuidParam), validate('json', customerBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
 
-    const { data, error } = await auth.client
-      .from('customers')
-      .update({
-        name: request.body.name,
-        email: request.body.email || null,
-        phone: request.body.phone || null,
-        lifecycle_stage: request.body.lifecycleStage,
-        notes: request.body.notes || null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', request.params.id)
-      .select(SELECT)
-      .single();
-    if (error) return sendPgError(reply, error);
-    reply.send(fromRow(data));
-  });
+  const body = c.req.valid('json');
+  const { data, error } = await auth.client
+    .from('customers')
+    .update({
+      name: body.name,
+      email: body.email || null,
+      phone: body.phone || null,
+      lifecycle_stage: body.lifecycleStage,
+      notes: body.notes || null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', c.req.valid('param').id)
+    .select(SELECT)
+    .single();
+  if (error) return sendPgError(c, error);
+  return c.json(fromRow(data));
+});
 
-  server.delete('/api/customers', { schema: { body: bulkIdsBody } }, async (request, reply) => {
-    const auth = await requireOrg(request, reply);
-    if (!auth) return;
+app.delete('/api/customers', validate('json', bulkIdsBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
 
-    const { error } = await auth.client.from('customers').delete().in('id', request.body.ids);
-    if (error) return sendPgError(reply, error);
-    reply.code(204).send();
-  });
-}
+  const { error } = await auth.client.from('customers').delete().in('id', c.req.valid('json').ids);
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
+export default app;

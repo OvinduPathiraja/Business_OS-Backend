@@ -1,8 +1,9 @@
-import type { FastifyInstance } from 'fastify';
+import { Hono } from 'hono';
 import { z } from 'zod';
-import type { ZodTypeProvider } from 'fastify-type-provider-zod';
+import type { Bindings } from '../lib/supabase.js';
 import { requireUser, requireOrg } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
+import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
 
 const PAYMENT_METHODS = ['card', 'cash', 'bank_transfer', 'wallet'] as const;
@@ -58,106 +59,106 @@ function orderWithItemsFromRow(row: any) {
   };
 }
 
-export default async function ordersRoutes(app: FastifyInstance) {
-  const server = app.withTypeProvider<ZodTypeProvider>();
+const app = new Hono<{ Bindings: Bindings }>();
 
-  // Flat, org-wide order_items — used by the Reports aggregation to build a
-  // top-services breakdown.
-  server.get('/api/order-items', async (request, reply) => {
-    const auth = await requireUser(request, reply);
-    if (!auth) return;
+// Flat, org-wide order_items — used by the Reports aggregation to build a
+// top-services breakdown.
+app.get('/api/order-items', async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
 
-    const { data, error } = await auth.client.from('order_items').select('service_id, item_name, quantity, line_total, created_at');
-    if (error) return sendPgError(reply, error);
-    reply.send((data ?? []).map((r: any) => ({
-      serviceId: r.service_id, itemName: r.item_name, quantity: Number(r.quantity),
-      lineTotal: Number(r.line_total), createdAt: r.created_at,
-    })));
+  const { data, error } = await auth.client.from('order_items').select('service_id, item_name, quantity, line_total, created_at');
+  if (error) return sendPgError(c, error);
+  return c.json((data ?? []).map((r: any) => ({
+    serviceId: r.service_id, itemName: r.item_name, quantity: Number(r.quantity),
+    lineTotal: Number(r.line_total), createdAt: r.created_at,
+  })));
+});
+
+app.get('/api/orders', validate('query', listQuery), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  let query = auth.client.from('orders').select(ORDER_SELECT).order('created_at', { ascending: false });
+  const { search, status, customerId, limit, offset } = c.req.valid('query');
+  if (search) query = query.ilike('customer_name', `%${search}%`);
+  if (status) query = query.eq('status', status);
+  if (customerId) query = query.eq('customer_id', customerId);
+  query = query.range(offset, offset + limit - 1);
+
+  const { data, error } = await query;
+  if (error) return sendPgError(c, error);
+  return c.json((data ?? []).map(orderFromRow));
+});
+
+app.get('/api/orders/:id', validate('param', uuidParam), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const { data, error } = await auth.client.from('orders').select(ORDER_DETAIL_SELECT).eq('id', c.req.valid('param').id).single();
+  if (error) return sendPgError(c, error);
+  return c.json(orderWithItemsFromRow(data));
+});
+
+// Narrow, non-financial edit — customer link and notes only. Reversing a
+// sale is the /refund action below, not this.
+app.patch('/api/orders/:id', validate('param', uuidParam), validate('json', updateBody), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const body = c.req.valid('json');
+  const { data, error } = await auth.client
+    .from('orders')
+    .update({ customer_id: body.customerId, customer_name: body.customerName, notes: body.notes || null })
+    .eq('id', c.req.valid('param').id)
+    .select(ORDER_SELECT)
+    .single();
+  if (error) return sendPgError(c, error);
+  return c.json(orderFromRow(data));
+});
+
+app.delete('/api/orders', validate('json', bulkIdsBody), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const { error } = await auth.client.from('orders').delete().in('id', c.req.valid('json').ids);
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
+// One-way 'completed' -> 'refunded'. Thin wrapper — refund_order() is
+// already a correct, atomic SECURITY DEFINER RPC.
+app.post('/api/orders/:id/refund', validate('param', uuidParam), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const { error } = await auth.client.rpc('refund_order', { p_order_id: c.req.valid('param').id });
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
+// Wraps the complete_order() RPC — atomically creates the order, its line
+// items, the linked invoice, and the payment in one transaction, instead of
+// 4 sequential client inserts.
+app.post('/api/orders', validate('json', completeOrderBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const b = c.req.valid('json');
+  const notes = b.items.map((it) => `${it.name} ×${it.quantity}`).join(', ');
+
+  const { data, error } = await auth.client.rpc('complete_order', {
+    p_customer_id: b.customerId,
+    p_customer_name: b.customerName,
+    p_subtotal: b.subtotal,
+    p_tax: b.tax,
+    p_total: b.total,
+    p_items: b.items.map((it) => ({ serviceId: it.serviceId, name: it.name, quantity: it.quantity, unitPrice: it.unitPrice })),
+    p_notes: notes,
+    p_payment_method: b.paymentMethod,
   });
+  if (error) return sendPgError(c, error);
+  return c.json({ orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber }, 201);
+});
 
-  server.get('/api/orders', { schema: { querystring: listQuery } }, async (request, reply) => {
-    const auth = await requireUser(request, reply);
-    if (!auth) return;
-
-    let query = auth.client.from('orders').select(ORDER_SELECT).order('created_at', { ascending: false });
-    const { search, status, customerId, limit, offset } = request.query;
-    if (search) query = query.ilike('customer_name', `%${search}%`);
-    if (status) query = query.eq('status', status);
-    if (customerId) query = query.eq('customer_id', customerId);
-    query = query.range(offset, offset + limit - 1);
-
-    const { data, error } = await query;
-    if (error) return sendPgError(reply, error);
-    reply.send((data ?? []).map(orderFromRow));
-  });
-
-  server.get('/api/orders/:id', { schema: { params: uuidParam } }, async (request, reply) => {
-    const auth = await requireUser(request, reply);
-    if (!auth) return;
-
-    const { data, error } = await auth.client.from('orders').select(ORDER_DETAIL_SELECT).eq('id', request.params.id).single();
-    if (error) return sendPgError(reply, error);
-    reply.send(orderWithItemsFromRow(data));
-  });
-
-  // Narrow, non-financial edit — customer link and notes only. Reversing a
-  // sale is the /refund action below, not this.
-  server.patch('/api/orders/:id', { schema: { params: uuidParam, body: updateBody } }, async (request, reply) => {
-    const auth = await requireUser(request, reply);
-    if (!auth) return;
-
-    const { data, error } = await auth.client
-      .from('orders')
-      .update({ customer_id: request.body.customerId, customer_name: request.body.customerName, notes: request.body.notes || null })
-      .eq('id', request.params.id)
-      .select(ORDER_SELECT)
-      .single();
-    if (error) return sendPgError(reply, error);
-    reply.send(orderFromRow(data));
-  });
-
-  server.delete('/api/orders', { schema: { body: bulkIdsBody } }, async (request, reply) => {
-    const auth = await requireUser(request, reply);
-    if (!auth) return;
-
-    const { error } = await auth.client.from('orders').delete().in('id', request.body.ids);
-    if (error) return sendPgError(reply, error);
-    reply.code(204).send();
-  });
-
-  // One-way 'completed' -> 'refunded'. Thin wrapper — refund_order() is
-  // already a correct, atomic SECURITY DEFINER RPC.
-  server.post('/api/orders/:id/refund', { schema: { params: uuidParam } }, async (request, reply) => {
-    const auth = await requireUser(request, reply);
-    if (!auth) return;
-
-    const { error } = await auth.client.rpc('refund_order', { p_order_id: request.params.id });
-    if (error) return sendPgError(reply, error);
-    reply.code(204).send();
-  });
-
-  // Wraps the new complete_order() RPC (added in
-  // supabase/migrations/20260710120000_transactional_write_rpcs.sql) —
-  // atomically creates the order, its line items, the linked invoice, and
-  // the payment in one transaction, instead of 4 sequential client inserts.
-  server.post('/api/orders', { schema: { body: completeOrderBody } }, async (request, reply) => {
-    const auth = await requireOrg(request, reply);
-    if (!auth) return;
-
-    const b = request.body;
-    const notes = b.items.map((it) => `${it.name} ×${it.quantity}`).join(', ');
-
-    const { data, error } = await auth.client.rpc('complete_order', {
-      p_customer_id: b.customerId,
-      p_customer_name: b.customerName,
-      p_subtotal: b.subtotal,
-      p_tax: b.tax,
-      p_total: b.total,
-      p_items: b.items.map((it) => ({ serviceId: it.serviceId, name: it.name, quantity: it.quantity, unitPrice: it.unitPrice })),
-      p_notes: notes,
-      p_payment_method: b.paymentMethod,
-    });
-    if (error) return sendPgError(reply, error);
-    reply.code(201).send({ orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber });
-  });
-}
+export default app;

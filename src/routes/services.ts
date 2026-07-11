@@ -1,8 +1,9 @@
-import type { FastifyInstance } from 'fastify';
+import { Hono } from 'hono';
 import { z } from 'zod';
-import type { ZodTypeProvider } from 'fastify-type-provider-zod';
+import type { Bindings } from '../lib/supabase.js';
 import { requireOrg } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
+import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
 
 const serviceBody = z.object({
@@ -33,77 +34,77 @@ function fromRow(row: any) {
   };
 }
 
-export default async function servicesRoutes(app: FastifyInstance) {
-  const server = app.withTypeProvider<ZodTypeProvider>();
+const app = new Hono<{ Bindings: Bindings }>();
 
-  server.get('/api/services', { schema: { querystring: paginationQuery } }, async (request, reply) => {
-    const auth = await requireOrg(request, reply);
-    if (!auth) return;
+app.get('/api/services', validate('query', paginationQuery), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
 
-    let query = auth.client.from('services').select(SELECT).order('name', { ascending: true });
-    const { search, limit, offset } = request.query;
-    if (search) query = query.ilike('name', `%${search}%`);
-    query = query.range(offset, offset + limit - 1);
+  let query = auth.client.from('services').select(SELECT).order('name', { ascending: true });
+  const { search, limit, offset } = c.req.valid('query');
+  if (search) query = query.ilike('name', `%${search}%`);
+  query = query.range(offset, offset + limit - 1);
 
-    const { data, error } = await query;
-    if (error) return sendPgError(reply, error);
-    reply.send((data ?? []).map(fromRow));
-  });
+  const { data, error } = await query;
+  if (error) return sendPgError(c, error);
+  return c.json((data ?? []).map(fromRow));
+});
 
-  server.post('/api/services', { schema: { body: serviceBody } }, async (request, reply) => {
-    const auth = await requireOrg(request, reply);
-    if (!auth) return;
+app.post('/api/services', validate('json', serviceBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
 
-    const b = request.body;
-    const { data, error } = await auth.client
-      .from('services')
-      .insert({
-        organization_id: auth.organizationId,
-        name: b.name,
-        description: b.description || null,
-        price: b.price ?? 0,
-        duration_options: b.durationOptions ?? [],
-        allows_time: b.allowsTime ?? true,
-        allows_slot: b.allowsSlot ?? true,
-        ...(b.tint ? { tint: b.tint } : {}),
-        ...(b.icon ? { icon: b.icon } : {}),
-      })
-      .select(SELECT)
-      .single();
-    if (error) return sendPgError(reply, error);
-    reply.code(201).send(fromRow(data));
-  });
+  const b = c.req.valid('json');
+  const { data, error } = await auth.client
+    .from('services')
+    .insert({
+      organization_id: auth.organizationId,
+      name: b.name,
+      description: b.description || null,
+      price: b.price ?? 0,
+      duration_options: b.durationOptions ?? [],
+      allows_time: b.allowsTime ?? true,
+      allows_slot: b.allowsSlot ?? true,
+      ...(b.tint ? { tint: b.tint } : {}),
+      ...(b.icon ? { icon: b.icon } : {}),
+    })
+    .select(SELECT)
+    .single();
+  if (error) return sendPgError(c, error);
+  return c.json(fromRow(data), 201);
+});
 
-  server.patch('/api/services/:id', { schema: { params: uuidParam, body: serviceBody } }, async (request, reply) => {
-    const auth = await requireOrg(request, reply);
-    if (!auth) return;
+app.patch('/api/services/:id', validate('param', uuidParam), validate('json', serviceBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
 
-    const b = request.body;
-    const { data, error } = await auth.client
-      .from('services')
-      .update({
-        name: b.name,
-        description: b.description || null,
-        price: b.price ?? 0,
-        duration_options: b.durationOptions ?? [],
-        allows_time: b.allowsTime ?? true,
-        allows_slot: b.allowsSlot ?? true,
-        ...(b.tint ? { tint: b.tint } : {}),
-        ...(b.icon ? { icon: b.icon } : {}),
-      })
-      .eq('id', request.params.id)
-      .select(SELECT)
-      .single();
-    if (error) return sendPgError(reply, error);
-    reply.send(fromRow(data));
-  });
+  const b = c.req.valid('json');
+  const { data, error } = await auth.client
+    .from('services')
+    .update({
+      name: b.name,
+      description: b.description || null,
+      price: b.price ?? 0,
+      duration_options: b.durationOptions ?? [],
+      allows_time: b.allowsTime ?? true,
+      allows_slot: b.allowsSlot ?? true,
+      ...(b.tint ? { tint: b.tint } : {}),
+      ...(b.icon ? { icon: b.icon } : {}),
+    })
+    .eq('id', c.req.valid('param').id)
+    .select(SELECT)
+    .single();
+  if (error) return sendPgError(c, error);
+  return c.json(fromRow(data));
+});
 
-  server.delete('/api/services', { schema: { body: bulkIdsBody } }, async (request, reply) => {
-    const auth = await requireOrg(request, reply);
-    if (!auth) return;
+app.delete('/api/services', validate('json', bulkIdsBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
 
-    const { error } = await auth.client.from('services').delete().in('id', request.body.ids);
-    if (error) return sendPgError(reply, error);
-    reply.code(204).send();
-  });
-}
+  const { error } = await auth.client.from('services').delete().in('id', c.req.valid('json').ids);
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
+export default app;

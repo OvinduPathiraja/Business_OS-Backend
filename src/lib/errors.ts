@@ -1,15 +1,15 @@
-import type { FastifyReply } from 'fastify';
+import type { Context } from 'hono';
 
 // Maps a Postgres/PostgREST error (the `{ error }` half of every supabase-js
 // result) to an HTTP status + response body, so route handlers just do
-// `if (error) return sendPgError(reply, error);` instead of hand-rolling a
+// `if (error) return sendPgError(c, error);` instead of hand-rolling a
 // status code at every call site. `code` is passed through verbatim so the
 // frontend can still branch on it (e.g. 23P01 -> BookingConflictError).
-export function sendPgError(reply: FastifyReply, error: { message: string; code?: string }) {
-  reply.code(statusForCode(error.code)).send({ error: error.message, code: error.code });
+export function sendPgError(c: Context, error: { message: string; code?: string }): Response {
+  return c.json({ error: error.message, code: error.code }, statusForCode(error.code));
 }
 
-function statusForCode(code: string | undefined): number {
+function statusForCode(code: string | undefined): 400 | 403 | 404 | 409 | 500 {
   switch (code) {
     case '23P01': // exclusion violation (e.g. overlapping booking)
     case '23505': // unique violation
