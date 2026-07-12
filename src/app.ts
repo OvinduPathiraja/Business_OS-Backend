@@ -15,6 +15,7 @@ import rolesRoutes from './routes/roles.js';
 import employeesRoutes from './routes/employees.js';
 import notificationsRoutes from './routes/notifications.js';
 import reportsRoutes from './routes/reports.js';
+import activityRoutes from './routes/activity.js';
 
 export function buildApp() {
   const app = new Hono<{ Bindings: Bindings }>();
@@ -26,6 +27,9 @@ export function buildApp() {
     const allowedOrigin = c.env.ALLOWED_ORIGIN;
     const middleware = cors({
       origin: allowedOrigin ? allowedOrigin.split(',').map((o) => o.trim()) : '*',
+      // Custom response headers are invisible to browser JS unless listed
+      // here — X-Total-Count backs paginated tables (Customers, Services).
+      exposeHeaders: ['X-Total-Count'],
     });
     return middleware(c, next);
   });
@@ -65,6 +69,7 @@ export function buildApp() {
   app.route('/', employeesRoutes);
   app.route('/', notificationsRoutes);
   app.route('/', reportsRoutes);
+  app.route('/', activityRoutes);
 
   return app;
 }

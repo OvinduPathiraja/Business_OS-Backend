@@ -6,21 +6,21 @@ import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
 
-const LIFECYCLE_STAGES = ['lead', 'active', 'vip', 'dormant', 'archived'] as const;
+const CUSTOMER_STATUSES = ['active', 'inactive', 'blacklisted'] as const;
 
 const listQuery = paginationQuery.extend({
-  lifecycleStage: z.enum(LIFECYCLE_STAGES).optional(),
+  status: z.enum(CUSTOMER_STATUSES).optional(),
 });
 
 const customerBody = z.object({
   name: z.string().trim().min(1),
   email: z.string().trim().email().optional().nullable(),
   phone: z.string().trim().optional().nullable(),
-  lifecycleStage: z.enum(LIFECYCLE_STAGES).optional(),
+  status: z.enum(CUSTOMER_STATUSES).optional(),
   notes: z.string().optional().nullable(),
 });
 
-const SELECT = 'id, organization_id, name, email, phone, lifecycle_stage, notes, created_at';
+const SELECT = 'id, organization_id, name, email, phone, status, notes, created_at';
 
 function fromRow(row: any) {
   return {
@@ -29,7 +29,7 @@ function fromRow(row: any) {
     name: row.name,
     email: row.email,
     phone: row.phone,
-    lifecycleStage: row.lifecycle_stage,
+    status: row.status,
     notes: row.notes,
     createdAt: row.created_at,
   };
@@ -41,15 +41,25 @@ app.get('/api/customers', validate('query', listQuery), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
-  let query = auth.client.from('customers').select(SELECT).order('created_at', { ascending: false });
-  const { search, lifecycleStage, limit, offset } = c.req.valid('query');
+  let query = auth.client.from('customers').select(SELECT, { count: 'exact' }).order('created_at', { ascending: false });
+  const { search, status, limit, offset } = c.req.valid('query');
   if (search) query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%`);
-  if (lifecycleStage) query = query.eq('lifecycle_stage', lifecycleStage);
+  if (status) query = query.eq('status', status);
   query = query.range(offset, offset + limit - 1);
 
-  const { data, error } = await query;
+  const { data, error, count } = await query;
   if (error) return sendPgError(c, error);
+  c.header('X-Total-Count', String(count ?? 0));
   return c.json((data ?? []).map(fromRow));
+});
+
+app.get('/api/customers/:id', validate('param', uuidParam), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const { data, error } = await auth.client.from('customers').select(SELECT).eq('id', c.req.valid('param').id).single();
+  if (error) return sendPgError(c, error);
+  return c.json(fromRow(data));
 });
 
 app.post('/api/customers', validate('json', customerBody), async (c) => {
@@ -64,7 +74,7 @@ app.post('/api/customers', validate('json', customerBody), async (c) => {
       name: body.name,
       email: body.email || null,
       phone: body.phone || null,
-      lifecycle_stage: body.lifecycleStage ?? 'lead',
+      status: body.status ?? 'active',
       notes: body.notes || null,
     })
     .select(SELECT)
@@ -84,7 +94,7 @@ app.patch('/api/customers/:id', validate('param', uuidParam), validate('json', c
       name: body.name,
       email: body.email || null,
       phone: body.phone || null,
-      lifecycle_stage: body.lifecycleStage,
+      status: body.status,
       notes: body.notes || null,
       updated_at: new Date().toISOString(),
     })

@@ -72,6 +72,20 @@ app.post('/api/inventory/categories', validate('json', categoryBody), async (c) 
   return c.json({ id: data.id, organizationId: data.organization_id, name: data.name }, 201);
 });
 
+app.patch('/api/inventory/categories/:id', validate('param', uuidParam), validate('json', categoryBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const { data, error } = await auth.client
+    .from('inventory_categories')
+    .update({ name: c.req.valid('json').name })
+    .eq('id', c.req.valid('param').id)
+    .select('id, organization_id, name')
+    .single();
+  if (error) return sendPgError(c, error);
+  return c.json({ id: data.id, organizationId: data.organization_id, name: data.name });
+});
+
 app.delete('/api/inventory/categories/:id', validate('param', uuidParam), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;

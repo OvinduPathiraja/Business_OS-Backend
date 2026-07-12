@@ -40,13 +40,14 @@ app.get('/api/services', validate('query', paginationQuery), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
-  let query = auth.client.from('services').select(SELECT).order('name', { ascending: true });
+  let query = auth.client.from('services').select(SELECT, { count: 'exact' }).order('name', { ascending: true });
   const { search, limit, offset } = c.req.valid('query');
   if (search) query = query.ilike('name', `%${search}%`);
   query = query.range(offset, offset + limit - 1);
 
-  const { data, error } = await query;
+  const { data, error, count } = await query;
   if (error) return sendPgError(c, error);
+  c.header('X-Total-Count', String(count ?? 0));
   return c.json((data ?? []).map(fromRow));
 });
 
