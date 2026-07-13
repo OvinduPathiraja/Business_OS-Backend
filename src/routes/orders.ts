@@ -34,15 +34,15 @@ const completeOrderBody = z.object({
   paymentMethod: z.enum(PAYMENT_METHODS),
 });
 
-const ORDER_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, tax, total, notes, created_at, order_items(count)';
-const ORDER_DETAIL_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, tax, total, notes, created_at, order_items(id, service_id, item_name, quantity, unit_price, line_total)';
+const ORDER_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, tax, total, notes, booking_id, created_at, order_items(count)';
+const ORDER_DETAIL_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, tax, total, notes, booking_id, created_at, order_items(id, service_id, item_name, quantity, unit_price, line_total)';
 
 function orderFromRow(row: any) {
   const itemCountRow = Array.isArray(row.order_items) ? row.order_items[0] : row.order_items;
   return {
     id: row.id, organizationId: row.organization_id, customerId: row.customer_id, customerName: row.customer_name,
     status: row.status, subtotal: Number(row.subtotal), tax: Number(row.tax), total: Number(row.total),
-    notes: row.notes, itemCount: Number(itemCountRow?.count ?? 0), createdAt: row.created_at,
+    notes: row.notes, bookingId: row.booking_id, itemCount: Number(itemCountRow?.count ?? 0), createdAt: row.created_at,
   };
 }
 
@@ -51,7 +51,7 @@ function orderWithItemsFromRow(row: any) {
   return {
     id: row.id, organizationId: row.organization_id, customerId: row.customer_id, customerName: row.customer_name,
     status: row.status, subtotal: Number(row.subtotal), tax: Number(row.tax), total: Number(row.total),
-    notes: row.notes, itemCount: items.length, createdAt: row.created_at,
+    notes: row.notes, bookingId: row.booking_id, itemCount: items.length, createdAt: row.created_at,
     items: items.map((it) => ({
       id: it.id, serviceId: it.service_id, itemName: it.item_name,
       quantity: Number(it.quantity), unitPrice: Number(it.unit_price), lineTotal: Number(it.line_total),

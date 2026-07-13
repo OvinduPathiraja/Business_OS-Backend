@@ -25,11 +25,26 @@ const confirmBody = z.object({
   startHour: z.number(),
   endHour: z.number(),
   notes: z.string().optional().nullable(),
-  price: z.number().min(0),
-  paymentMethod: z.enum(PAYMENT_METHODS),
 });
 
 const bulkIdsBody = z.object({ ids: z.array(z.string().uuid()).min(1) });
+
+// Same shape as orders.ts's completeOrderBody — converting a booking creates
+// a real order exactly like a walk-in one does, just sourced from a booking.
+const convertBody = z.object({
+  customerId: z.string().uuid().nullable(),
+  customerName: z.string().trim().min(1),
+  subtotal: z.number(),
+  tax: z.number(),
+  total: z.number(),
+  items: z.array(z.object({
+    serviceId: z.string().uuid(),
+    name: z.string(),
+    quantity: z.number().positive(),
+    unitPrice: z.number().min(0),
+  })).min(1),
+  paymentMethod: z.enum(PAYMENT_METHODS),
+});
 
 const BOOKING_SELECT = 'id, organization_id, customer_id, customer_name, service_id, service_name, booking_type, booking_date, start_hour, end_hour, status, notes, created_at';
 
@@ -118,8 +133,10 @@ app.delete('/api/bookings', validate('json', bulkIdsBody), async (c) => {
   return c.body(null, 204);
 });
 
-// Wraps the confirm_booking() RPC — atomically creates the booking and its
-// linked invoice + payment.
+// Wraps the confirm_booking() RPC — a booking is just a reservation, no
+// invoice/payment is created here. Money only changes hands once the
+// booking is converted to an order (see /convert below) or a walk-in order
+// is completed directly.
 app.post('/api/bookings', validate('json', confirmBody), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
@@ -135,11 +152,35 @@ app.post('/api/bookings', validate('json', confirmBody), async (c) => {
     p_start_hour: b.startHour,
     p_end_hour: b.endHour,
     p_notes: b.notes || null,
-    p_price: b.price,
+  });
+  if (error) return sendPgError(c, error);
+  return c.json({ bookingId: data.bookingId }, 201);
+});
+
+// The customer arrived — wraps the convert_booking_to_order() RPC, which
+// atomically flips the booking 'confirmed' -> 'fulfilled' and creates a real
+// order + line items + paid invoice + payment, exactly like POST /api/orders
+// does for a walk-in sale.
+app.post('/api/bookings/:id/convert', validate('param', uuidParam), validate('json', convertBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const b = c.req.valid('json');
+  const notes = b.items.map((it) => `${it.name} ×${it.quantity}`).join(', ');
+
+  const { data, error } = await auth.client.rpc('convert_booking_to_order', {
+    p_booking_id: c.req.valid('param').id,
+    p_customer_id: b.customerId,
+    p_customer_name: b.customerName,
+    p_subtotal: b.subtotal,
+    p_tax: b.tax,
+    p_total: b.total,
+    p_items: b.items.map((it) => ({ serviceId: it.serviceId, name: it.name, quantity: it.quantity, unitPrice: it.unitPrice })),
+    p_notes: notes,
     p_payment_method: b.paymentMethod,
   });
   if (error) return sendPgError(c, error);
-  return c.json({ bookingId: data.bookingId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber }, 201);
+  return c.json({ orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber }, 201);
 });
 
 export default app;
