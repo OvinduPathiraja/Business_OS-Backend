@@ -6,6 +6,14 @@ import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
 
+const SORT_FIELDS = ['name', 'price'] as const;
+const SORT_COLUMNS: Record<(typeof SORT_FIELDS)[number], string> = { name: 'name', price: 'price' };
+
+const listQuery = paginationQuery.extend({
+  sort: z.enum(SORT_FIELDS).optional(),
+  order: z.enum(['asc', 'desc']).optional().default('asc'),
+});
+
 const serviceBody = z.object({
   name: z.string().trim().min(1),
   description: z.string().optional().nullable(),
@@ -36,12 +44,13 @@ function fromRow(row: any) {
 
 const app = new Hono<{ Bindings: Bindings }>();
 
-app.get('/api/services', validate('query', paginationQuery), async (c) => {
+app.get('/api/services', validate('query', listQuery), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
-  let query = auth.client.from('services').select(SELECT, { count: 'exact' }).order('name', { ascending: true });
-  const { search, limit, offset } = c.req.valid('query');
+  const { search, sort, order, limit, offset } = c.req.valid('query');
+  let query = auth.client.from('services').select(SELECT, { count: 'exact' })
+    .order(sort ? SORT_COLUMNS[sort] : 'name', { ascending: sort ? order === 'asc' : true });
   if (search) query = query.ilike('name', `%${search}%`);
   query = query.range(offset, offset + limit - 1);
 

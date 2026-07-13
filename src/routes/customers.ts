@@ -4,13 +4,19 @@ import type { Bindings } from '../lib/supabase.js';
 import { requireOrg } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
-import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
+import { paginationQuery, optionalDateRangeQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
 
 const CUSTOMER_STATUSES = ['active', 'inactive', 'blacklisted'] as const;
+const SORT_FIELDS = ['name', 'email', 'status', 'createdAt'] as const;
+const SORT_COLUMNS: Record<(typeof SORT_FIELDS)[number], string> = {
+  name: 'name', email: 'email', status: 'status', createdAt: 'created_at',
+};
 
 const listQuery = paginationQuery.extend({
   status: z.enum(CUSTOMER_STATUSES).optional(),
-});
+  sort: z.enum(SORT_FIELDS).optional(),
+  order: z.enum(['asc', 'desc']).optional().default('desc'),
+}).extend(optionalDateRangeQuery.shape);
 
 const customerBody = z.object({
   name: z.string().trim().min(1),
@@ -41,10 +47,13 @@ app.get('/api/customers', validate('query', listQuery), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
-  let query = auth.client.from('customers').select(SELECT, { count: 'exact' }).order('created_at', { ascending: false });
-  const { search, status, limit, offset } = c.req.valid('query');
+  const { search, status, sort, order, from, to, limit, offset } = c.req.valid('query');
+  let query = auth.client.from('customers').select(SELECT, { count: 'exact' })
+    .order(sort ? SORT_COLUMNS[sort] : 'created_at', { ascending: sort ? order === 'asc' : false });
   if (search) query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%`);
   if (status) query = query.eq('status', status);
+  if (from) query = query.gte('created_at', from);
+  if (to) query = query.lte('created_at', `${to}T23:59:59`);
   query = query.range(offset, offset + limit - 1);
 
   const { data, error, count } = await query;

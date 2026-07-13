@@ -17,4 +17,12 @@ export const dateRangeQuery = z.object({
   to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 });
 
+// Same shape as dateRangeQuery, but both bounds optional — for list routes
+// where a date-range filter is one of several optional query params rather
+// than the sole way of scoping the query (see bookings.ts for that case).
+export const optionalDateRangeQuery = z.object({
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+});
+
 export const bulkIdsBody = z.object({ ids: z.array(z.string().uuid()).min(1) });
