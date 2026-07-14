@@ -4,23 +4,31 @@ import type { Bindings } from '../lib/supabase.js';
 import { requireUser } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
-import { PERIODS, computePeriodStats, dateKey, startOfToday } from '../lib/periodStats.js';
+import { MAX_RANGE_DAYS, computePeriodStats, dateKey, parseDateKey, rangeDays, resolveRange, startOfToday } from '../lib/periodStats.js';
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const dashboardQuery = z.object({
-  period: z.coerce.number().refine((n): n is (typeof PERIODS)[number] => (PERIODS as readonly number[]).includes(n)).optional().default(7),
-});
+  from: z.string().regex(DATE_RE).optional(),
+  to: z.string().regex(DATE_RE).optional(),
+}).refine((q) => (q.from == null) === (q.to == null), { message: 'from and to must be provided together' })
+  .refine((q) => !q.from || !q.to || parseDateKey(q.from) <= parseDateKey(q.to), { message: 'from must not be after to' })
+  .refine((q) => !q.from || !q.to || rangeDays({ from: parseDateKey(q.from), to: parseDateKey(q.to) }) <= MAX_RANGE_DAYS, {
+    message: `Date range cannot exceed ${MAX_RANGE_DAYS} days`,
+  });
 
 const app = new Hono<{ Bindings: Bindings }>();
 
 // The one thing computePeriodStats() (shared with reports.ts) doesn't cover:
 // a true "right now" snapshot — how many orders/bookings exist for *today*,
 // and what's still ahead on today's schedule. Everything else in the
-// response is the same period-scoped aggregation Reports.tsx already shows.
+// response is the same range-scoped aggregation Reports.tsx already shows.
 app.get('/api/dashboard', validate('query', dashboardQuery), async (c) => {
   const auth = await requireUser(c);
   if (auth instanceof Response) return auth;
 
-  const period = c.req.valid('query').period;
+  const { from, to } = c.req.valid('query');
+  const range = resolveRange(from, to, 7);
   const today = startOfToday();
   const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);
@@ -29,7 +37,7 @@ app.get('/api/dashboard', validate('query', dashboardQuery), async (c) => {
   const nowHour = now.getHours() + now.getMinutes() / 60;
 
   const [stats, ordersTodayRes, bookingsTodayRes] = await Promise.all([
-    computePeriodStats(c, auth, period),
+    computePeriodStats(c, auth, range),
     auth.client.from('orders').select('id, created_at').gte('created_at', today.toISOString()).lt('created_at', tomorrow.toISOString()),
     auth.client
       .from('bookings')
@@ -56,7 +64,8 @@ app.get('/api/dashboard', validate('query', dashboardQuery), async (c) => {
     }));
 
   return c.json({
-    period,
+    from: dateKey(range.from),
+    to: dateKey(range.to),
     today: {
       ordersToday: (ordersTodayRes.data ?? []).length,
       bookingsToday: bookingsToday.length,

@@ -3,8 +3,16 @@ import type { Bindings } from './supabase.js';
 import type { AuthResult } from './auth.js';
 import { sendPgError } from './errors.js';
 
-export const PERIODS = [7, 30, 90] as const;
-export type Period = (typeof PERIODS)[number];
+// Reports/Dashboard used to only offer 7/30/90-day presets ending today.
+// They're now backed by an arbitrary calendar date range, still capped at
+// MAX_RANGE_DAYS so a query never has to scan more than that many days of
+// rows.
+export const MAX_RANGE_DAYS = 90;
+
+export interface DateRange {
+  from: Date; // start of day, inclusive
+  to: Date;   // start of day, inclusive
+}
 
 export interface PeriodStats {
   kpis: {
@@ -28,8 +36,34 @@ export function startOfToday(): Date {
   return d;
 }
 
+// Parses a "YYYY-MM-DD" key as a local-midnight Date (mirrors the frontend's
+// parseLocalDateKey) — using `new Date(string)` instead would parse as UTC
+// midnight and shift the range by a timezone offset for non-UTC clients.
+export function parseDateKey(key: string): Date {
+  const [y, m, d] = key.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+export function rangeDays(range: DateRange): number {
+  return Math.round((range.to.getTime() - range.from.getTime()) / 86400000) + 1;
+}
+
+// Resolves the from/to query params into a concrete range, falling back to
+// "the last `defaultDays` days ending today" when neither is supplied.
+export function resolveRange(from: string | undefined, to: string | undefined, defaultDays: number): DateRange {
+  if (!from || !to) {
+    const today = startOfToday();
+    const start = new Date(today);
+    start.setDate(start.getDate() - (defaultDays - 1));
+    return { from: start, to: today };
+  }
+  return { from: parseDateKey(from), to: parseDateKey(to) };
+}
+
 // Extracted out of reports.ts (which was the sole caller) so dashboard.ts can
-// reuse the same period-scoped aggregation without duplicating these ~6
+// reuse the same range-scoped aggregation without duplicating these ~6
 // queries. Body is unchanged from reports.ts's original inline version —
 // same query shape, same in-TypeScript grouping/summing rationale (bounding
 // *query result size* to the requested window is the actual scale fix here,
@@ -37,24 +71,26 @@ export function startOfToday(): Date {
 export async function computePeriodStats(
   c: Context<{ Bindings: Bindings }>,
   auth: AuthResult,
-  period: Period
+  range: DateRange
 ): Promise<PeriodStats | Response> {
-  const today = startOfToday();
-  const cutoff = new Date(today);
-  cutoff.setDate(cutoff.getDate() - (period - 1));
-  const cutoffKey = dateKey(cutoff);
-  const todayKey = dateKey(today);
-  const cutoffIso = cutoff.toISOString();
+  const { from, to } = range;
+  const toExclusive = new Date(to);
+  toExclusive.setDate(toExclusive.getDate() + 1);
+  const fromKey = dateKey(from);
+  const toKey = dateKey(to);
+  const fromIso = from.toISOString();
+  const toExclusiveIso = toExclusive.toISOString();
+  const days = rangeDays(range);
 
   const [ordersRes, paidInvoicesRes, outstandingInvoicesRes, bookingsRes, orderItemsRes, itemsRes] = await Promise.all([
-    auth.client.from('orders').select('id, created_at').gte('created_at', cutoffIso),
-    auth.client.from('invoices').select('id, total, created_at').eq('status', 'paid').gte('created_at', cutoffIso),
+    auth.client.from('orders').select('id, created_at').gte('created_at', fromIso).lt('created_at', toExclusiveIso),
+    auth.client.from('invoices').select('id, total, created_at').eq('status', 'paid').gte('created_at', fromIso).lt('created_at', toExclusiveIso),
     // Same predicate as frontend/src/lib/finance.ts's isOutstandingInvoice()
     // — unbounded by date on purpose, AR aging cares about old unpaid
     // invoices specifically.
     auth.client.from('invoices').select('total, amount_paid').neq('status', 'paid').neq('status', 'void').neq('status', 'refunded'),
-    auth.client.from('bookings').select('id, booking_date').eq('status', 'confirmed').gte('booking_date', cutoffKey).lte('booking_date', todayKey),
-    auth.client.from('order_items').select('service_id, item_name, quantity, line_total, created_at').gte('created_at', cutoffIso),
+    auth.client.from('bookings').select('id, booking_date').eq('status', 'confirmed').gte('booking_date', fromKey).lte('booking_date', toKey),
+    auth.client.from('order_items').select('service_id, item_name, quantity, line_total, created_at').gte('created_at', fromIso).lt('created_at', toExclusiveIso),
     auth.client.from('inventory_items').select('id, name, unit, quantity_on_hand, reorder_point'),
   ]);
 
@@ -71,8 +107,8 @@ export async function computePeriodStats(
     byDay.set(k, (byDay.get(k) ?? 0) + Number(i.total));
   });
   const dailyRevenue: { key: string; amount: number }[] = [];
-  for (let n = 0; n < period; n++) {
-    const d = new Date(cutoff);
+  for (let n = 0; n < days; n++) {
+    const d = new Date(from);
     d.setDate(d.getDate() + n);
     const k = dateKey(d);
     dailyRevenue.push({ key: k, amount: byDay.get(k) ?? 0 });
