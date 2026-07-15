@@ -85,6 +85,50 @@ app.delete('/api/invoices', validate('json', bulkIdsBody), async (c) => {
   return c.body(null, 204);
 });
 
+// Aggregates everything a printable invoice needs in one PostgREST embedded
+// select — org name for the letterhead, line items (via order_id for a
+// walk-in sale), and payment history. invoices has no line items of its
+// own; a booking-originated invoice (booking_id set instead of order_id,
+// mutually exclusive per invoices_order_or_booking_check) has none to
+// select at all, so its single line item is synthesized below from
+// bookings.service_name + the invoice's own subtotal.
+app.get('/api/invoices/:id/print', validate('param', uuidParam), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const { data, error } = await auth.client
+    .from('invoices')
+    .select(
+      `${INVOICE_SELECT}, organizations(name), ` +
+      `orders(order_items(item_name, quantity, unit_price, line_total)), ` +
+      `bookings(service_name), ` +
+      `payments(amount, method, paid_at, notes)`
+    )
+    .eq('id', c.req.valid('param').id)
+    .single();
+  if (error) return sendPgError(c, error);
+
+  const row = data as any;
+  const orderItems: any[] = row.orders?.order_items ?? [];
+  const lineItems = orderItems.length > 0
+    ? orderItems.map((it) => ({
+        name: it.item_name, quantity: Number(it.quantity),
+        unitPrice: Number(it.unit_price), lineTotal: Number(it.line_total),
+      }))
+    : row.bookings
+      ? [{ name: row.bookings.service_name, quantity: 1, unitPrice: Number(row.subtotal), lineTotal: Number(row.subtotal) }]
+      : [];
+
+  return c.json({
+    invoice: invoiceFromRow(row),
+    organizationName: row.organizations?.name ?? '',
+    lineItems,
+    payments: (row.payments ?? []).map((p: any) => ({
+      amount: Number(p.amount), method: p.method, paidAt: p.paid_at, notes: p.notes,
+    })),
+  });
+});
+
 app.get('/api/invoices/:id/payments', validate('param', uuidParam), async (c) => {
   const auth = await requireUser(c);
   if (auth instanceof Response) return auth;

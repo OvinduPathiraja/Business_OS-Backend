@@ -17,6 +17,7 @@ import notificationsRoutes from './routes/notifications.js';
 import reportsRoutes from './routes/reports.js';
 import activityRoutes from './routes/activity.js';
 import dashboardRoutes from './routes/dashboard.js';
+import printersRoutes from './routes/printers.js';
 
 export function buildApp() {
   const app = new Hono<{ Bindings: Bindings }>();
@@ -72,6 +73,7 @@ export function buildApp() {
   app.route('/', reportsRoutes);
   app.route('/', activityRoutes);
   app.route('/', dashboardRoutes);
+  app.route('/', printersRoutes);
 
   return app;
 }
