@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Bindings } from '../lib/supabase.js';
-import { requireUser } from '../lib/auth.js';
+import { requireUser, requireOrg } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
@@ -28,6 +28,36 @@ const recordPaymentBody = z.object({
   method: z.enum(PAYMENT_METHODS),
   notes: z.string().optional().nullable(),
 });
+
+const invoiceSettingsBody = z.object({
+  logoUrl: z.string().trim().max(2048).optional().nullable(),
+  address: z.string().trim().max(500).optional().nullable(),
+  phone: z.string().trim().max(50).optional().nullable(),
+  email: z.string().trim().max(255).optional().nullable(),
+  accentColor: z.string().trim().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
+  footerText: z.string().trim().max(1000).optional().nullable(),
+  termsText: z.string().trim().max(2000).optional().nullable(),
+  showTax: z.boolean().optional(),
+  showDueDate: z.boolean().optional(),
+  showPaymentHistory: z.boolean().optional(),
+});
+
+const INVOICE_SETTINGS_SELECT = 'logo_url, address, phone, email, accent_color, footer_text, terms_text, show_tax, show_due_date, show_payment_history';
+
+function invoiceSettingsFromRow(row: any) {
+  return {
+    logoUrl: row?.logo_url ?? null,
+    address: row?.address ?? null,
+    phone: row?.phone ?? null,
+    email: row?.email ?? null,
+    accentColor: row?.accent_color ?? '#1A1D23',
+    footerText: row?.footer_text ?? null,
+    termsText: row?.terms_text ?? null,
+    showTax: row?.show_tax ?? true,
+    showDueDate: row?.show_due_date ?? true,
+    showPaymentHistory: row?.show_payment_history ?? true,
+  };
+}
 
 const INVOICE_SELECT = 'id, organization_id, order_id, customer_id, customer_name, invoice_number, status, issue_date, due_date, subtotal, tax, total, amount_paid, notes, created_at';
 
@@ -85,6 +115,45 @@ app.delete('/api/invoices', validate('json', bulkIdsBody), async (c) => {
   return c.body(null, 204);
 });
 
+app.get('/api/organization/invoice-settings', async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const { data, error } = await auth.client
+    .from('organization_invoice_settings')
+    .select(INVOICE_SETTINGS_SELECT)
+    .eq('organization_id', auth.organizationId)
+    .maybeSingle();
+  if (error) return sendPgError(c, error);
+  return c.json(invoiceSettingsFromRow(data));
+});
+
+app.patch('/api/organization/invoice-settings', validate('json', invoiceSettingsBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const b = c.req.valid('json');
+  const { error } = await auth.client.from('organization_invoice_settings').upsert(
+    {
+      organization_id: auth.organizationId,
+      ...(b.logoUrl !== undefined ? { logo_url: b.logoUrl || null } : {}),
+      ...(b.address !== undefined ? { address: b.address || null } : {}),
+      ...(b.phone !== undefined ? { phone: b.phone || null } : {}),
+      ...(b.email !== undefined ? { email: b.email || null } : {}),
+      ...(b.accentColor !== undefined ? { accent_color: b.accentColor } : {}),
+      ...(b.footerText !== undefined ? { footer_text: b.footerText || null } : {}),
+      ...(b.termsText !== undefined ? { terms_text: b.termsText || null } : {}),
+      ...(b.showTax !== undefined ? { show_tax: b.showTax } : {}),
+      ...(b.showDueDate !== undefined ? { show_due_date: b.showDueDate } : {}),
+      ...(b.showPaymentHistory !== undefined ? { show_payment_history: b.showPaymentHistory } : {}),
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'organization_id' }
+  );
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
 // Aggregates everything a printable invoice needs in one PostgREST embedded
 // select — org name for the letterhead, line items (via order_id for a
 // walk-in sale), and payment history. invoices has no line items of its
@@ -119,6 +188,14 @@ app.get('/api/invoices/:id/print', validate('param', uuidParam), async (c) => {
       ? [{ name: row.bookings.service_name, quantity: 1, unitPrice: Number(row.subtotal), lineTotal: Number(row.subtotal) }]
       : [];
 
+  // Best-effort — a missing/RLS-blocked settings row just falls back to
+  // invoiceSettingsFromRow(null)'s defaults rather than failing the print.
+  const { data: settingsRow } = await auth.client
+    .from('organization_invoice_settings')
+    .select(INVOICE_SETTINGS_SELECT)
+    .eq('organization_id', row.organization_id)
+    .maybeSingle();
+
   return c.json({
     invoice: invoiceFromRow(row),
     organizationName: row.organizations?.name ?? '',
@@ -126,6 +203,7 @@ app.get('/api/invoices/:id/print', validate('param', uuidParam), async (c) => {
     payments: (row.payments ?? []).map((p: any) => ({
       amount: Number(p.amount), method: p.method, paidAt: p.paid_at, notes: p.notes,
     })),
+    invoiceSettings: invoiceSettingsFromRow(settingsRow),
   });
 });
 
