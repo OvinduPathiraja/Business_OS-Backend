@@ -29,6 +29,52 @@ const recordPaymentBody = z.object({
   notes: z.string().optional().nullable(),
 });
 
+// Mirrors frontend/src/lib/invoiceLayout.ts's InvoiceElement/InvoiceLayout —
+// kept as a hand-maintained duplicate (same pattern as invoiceSettingsBody
+// mirroring InvoiceSettings) since the frontend types aren't importable
+// into the Workers build. Bounds are generous/absolute defense against
+// malformed payloads, not a strict layout-integrity checker — the editor's
+// own drag/resize clamping is what keeps elements sane in practice.
+const HEX = /^#[0-9A-Fa-f]{6}$/;
+const textStyleShape = {
+  fontSize: z.number().int().min(8).max(96),
+  color: z.string().regex(HEX),
+  align: z.enum(['left', 'center', 'right']),
+  fontWeight: z.enum(['400', '600', '700']),
+};
+const elementBase = {
+  id: z.string().min(1).max(64),
+  x: z.number().finite().min(0).max(4000),
+  y: z.number().finite().min(0).max(4000),
+  width: z.number().finite().min(4).max(4000),
+  height: z.number().finite().min(4).max(4000),
+};
+
+const invoiceElementSchema = z.discriminatedUnion('type', [
+  z.object({ ...elementBase, type: z.literal('logo'), fit: z.enum(['contain', 'cover']) }),
+  z.object({ ...elementBase, type: z.literal('businessName'), ...textStyleShape }),
+  z.object({ ...elementBase, type: z.literal('businessAddress'), ...textStyleShape }),
+  z.object({ ...elementBase, type: z.literal('businessPhone'), ...textStyleShape }),
+  z.object({ ...elementBase, type: z.literal('businessEmail'), ...textStyleShape }),
+  z.object({ ...elementBase, type: z.literal('invoiceNumber'), ...textStyleShape }),
+  z.object({ ...elementBase, type: z.literal('issueDate'), ...textStyleShape }),
+  z.object({ ...elementBase, type: z.literal('dueDate'), ...textStyleShape }),
+  z.object({ ...elementBase, type: z.literal('statusBadge'), fontSize: textStyleShape.fontSize, align: textStyleShape.align }),
+  z.object({ ...elementBase, type: z.literal('customerName'), ...textStyleShape }),
+  z.object({ ...elementBase, type: z.literal('lineItemsTable'), fontSize: textStyleShape.fontSize, showHeader: z.boolean() }),
+  z.object({ ...elementBase, type: z.literal('totalsBlock'), fontSize: textStyleShape.fontSize, showTax: z.boolean() }),
+  z.object({ ...elementBase, type: z.literal('paymentHistoryTable'), fontSize: textStyleShape.fontSize }),
+  z.object({ ...elementBase, type: z.literal('footerText'), ...textStyleShape }),
+  z.object({ ...elementBase, type: z.literal('termsText'), ...textStyleShape }),
+  z.object({ ...elementBase, type: z.literal('customText'), text: z.string().max(500), ...textStyleShape }),
+]);
+
+const invoiceLayoutSchema = z.object({
+  version: z.literal(1),
+  page: z.object({ width: z.number().int().min(200).max(3000), height: z.number().int().min(200).max(3000) }),
+  elements: z.array(invoiceElementSchema).max(60),
+});
+
 const invoiceSettingsBody = z.object({
   logoUrl: z.string().trim().max(2048).optional().nullable(),
   address: z.string().trim().max(500).optional().nullable(),
@@ -40,9 +86,10 @@ const invoiceSettingsBody = z.object({
   showTax: z.boolean().optional(),
   showDueDate: z.boolean().optional(),
   showPaymentHistory: z.boolean().optional(),
+  layout: invoiceLayoutSchema.nullable().optional(),
 });
 
-const INVOICE_SETTINGS_SELECT = 'logo_url, address, phone, email, accent_color, footer_text, terms_text, show_tax, show_due_date, show_payment_history';
+const INVOICE_SETTINGS_SELECT = 'logo_url, address, phone, email, accent_color, footer_text, terms_text, show_tax, show_due_date, show_payment_history, layout';
 
 function invoiceSettingsFromRow(row: any) {
   return {
@@ -56,6 +103,7 @@ function invoiceSettingsFromRow(row: any) {
     showTax: row?.show_tax ?? true,
     showDueDate: row?.show_due_date ?? true,
     showPaymentHistory: row?.show_payment_history ?? true,
+    layout: row?.layout ?? null,
   };
 }
 
@@ -146,6 +194,7 @@ app.patch('/api/organization/invoice-settings', validate('json', invoiceSettings
       ...(b.showTax !== undefined ? { show_tax: b.showTax } : {}),
       ...(b.showDueDate !== undefined ? { show_due_date: b.showDueDate } : {}),
       ...(b.showPaymentHistory !== undefined ? { show_payment_history: b.showPaymentHistory } : {}),
+      ...(b.layout !== undefined ? { layout: b.layout } : {}),
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'organization_id' }
