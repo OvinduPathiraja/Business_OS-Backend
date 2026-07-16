@@ -31,19 +31,25 @@ const bulkIdsBody = z.object({ ids: z.array(z.string().uuid()).min(1) });
 
 // Same shape as orders.ts's completeOrderBody — converting a booking creates
 // a real order exactly like a walk-in one does, just sourced from a booking.
+const lineItemSchema = z.object({
+  serviceId: z.string().uuid().optional(),
+  variantId: z.string().uuid().optional(),
+  name: z.string(),
+  quantity: z.number().positive(),
+  unitPrice: z.number().min(0),
+}).refine((it) => Boolean(it.serviceId) !== Boolean(it.variantId), {
+  message: 'Each line item must have exactly one of serviceId or variantId.',
+});
+
 const convertBody = z.object({
   customerId: z.string().uuid().nullable(),
   customerName: z.string().trim().min(1),
   subtotal: z.number(),
   tax: z.number(),
   total: z.number(),
-  items: z.array(z.object({
-    serviceId: z.string().uuid(),
-    name: z.string(),
-    quantity: z.number().positive(),
-    unitPrice: z.number().min(0),
-  })).min(1),
+  items: z.array(lineItemSchema).min(1),
   paymentMethod: z.enum(PAYMENT_METHODS),
+  branchId: z.string().uuid().optional().nullable(),
 });
 
 const BOOKING_SELECT = 'id, organization_id, customer_id, customer_name, service_id, service_name, booking_type, booking_date, start_hour, end_hour, status, notes, created_at';
@@ -175,12 +181,13 @@ app.post('/api/bookings/:id/convert', validate('param', uuidParam), validate('js
     p_subtotal: b.subtotal,
     p_tax: b.tax,
     p_total: b.total,
-    p_items: b.items.map((it) => ({ serviceId: it.serviceId, name: it.name, quantity: it.quantity, unitPrice: it.unitPrice })),
+    p_items: b.items.map((it) => ({ serviceId: it.serviceId ?? null, variantId: it.variantId ?? null, name: it.name, quantity: it.quantity, unitPrice: it.unitPrice })),
     p_notes: notes,
     p_payment_method: b.paymentMethod,
+    p_branch_id: b.branchId || null,
   });
   if (error) return sendPgError(c, error);
-  return c.json({ orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber }, 201);
+  return c.json({ orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber, branchId: data.branchId }, 201);
 });
 
 export default app;

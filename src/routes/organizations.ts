@@ -11,6 +11,8 @@ const updateCurrencyBody = z.object({ currency: z.string().length(3) });
 const settingsBody = z.object({
   screenType: z.enum(['guided', 'single', 'compact']).optional(),
   controlSize: z.enum(['comfortable', 'large', 'xlarge']).optional(),
+  productsEnabled: z.boolean().optional(),
+  bookingsEnabled: z.boolean().optional(),
 });
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -96,14 +98,19 @@ app.get('/api/organization/settings', async (c) => {
 
   const { data, error } = await auth.client
     .from('organization_settings')
-    .select('screen_type, control_size')
+    .select('screen_type, control_size, products_enabled, bookings_enabled')
     .eq('organization_id', auth.organizationId)
     .maybeSingle();
   if (error) return sendPgError(c, error);
   if (!data) {
-    return c.json({ screenType: 'guided', controlSize: 'comfortable' });
+    return c.json({ screenType: 'guided', controlSize: 'comfortable', productsEnabled: false, bookingsEnabled: true });
   }
-  return c.json({ screenType: data.screen_type, controlSize: data.control_size });
+  return c.json({
+    screenType: data.screen_type,
+    controlSize: data.control_size,
+    productsEnabled: data.products_enabled,
+    bookingsEnabled: data.bookings_enabled,
+  });
 });
 
 app.patch('/api/organization/settings', validate('json', settingsBody), async (c) => {
@@ -116,6 +123,8 @@ app.patch('/api/organization/settings', validate('json', settingsBody), async (c
       organization_id: auth.organizationId,
       ...(body.screenType ? { screen_type: body.screenType } : {}),
       ...(body.controlSize ? { control_size: body.controlSize } : {}),
+      ...(body.productsEnabled !== undefined ? { products_enabled: body.productsEnabled } : {}),
+      ...(body.bookingsEnabled !== undefined ? { bookings_enabled: body.bookingsEnabled } : {}),
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'organization_id' }

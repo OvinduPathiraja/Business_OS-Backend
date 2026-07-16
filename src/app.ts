@@ -8,6 +8,7 @@ import organizationsRoutes from './routes/organizations.js';
 import customersRoutes from './routes/customers.js';
 import servicesRoutes from './routes/services.js';
 import inventoryRoutes from './routes/inventory.js';
+import branchesRoutes from './routes/branches.js';
 import ordersRoutes from './routes/orders.js';
 import bookingsRoutes from './routes/bookings.js';
 import financeRoutes from './routes/finance.js';
@@ -68,6 +69,7 @@ export function buildApp() {
   app.route('/', customersRoutes);
   app.route('/', servicesRoutes);
   app.route('/', inventoryRoutes);
+  app.route('/', branchesRoutes);
   app.route('/', ordersRoutes);
   app.route('/', bookingsRoutes);
   app.route('/', financeRoutes);
