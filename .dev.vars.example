@@ -21,3 +21,15 @@ SUPABASE_SERVICE_ROLE_KEY=
 # production this is a plain [vars] entry in wrangler.toml instead, since
 # it's not sensitive.
 PUBLIC_APP_URL=http://localhost:19006
+
+# Resend API key (resend.com) — sends the "you've been invited to join
+# <org>" notification email when an ALREADY-registered user is invited into
+# a second organization (backend/src/lib/email.ts). New-account invites
+# still go through Supabase Auth's own inviteUserByEmail(), unaffected.
+# Requires a Resend account with a verified sending domain. In production
+# this must be a `wrangler secret put RESEND_API_KEY`, never a plain var.
+RESEND_API_KEY=
+
+# Must be on the domain verified with Resend above. In production this is a
+# plain [vars] entry in wrangler.toml instead, since it's not sensitive.
+EMAIL_FROM_ADDRESS=Business OS <notifications@localhost.test>

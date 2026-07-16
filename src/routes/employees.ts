@@ -6,6 +6,7 @@ import { requireUser, requireOrg } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { uuidParam } from '../lib/schemas.js';
+import { sendInviteEmail } from '../lib/email.js';
 
 const inviteBody = z.object({
   fullName: z.string().trim().min(1),
@@ -22,17 +23,27 @@ const updateBody = z.object({
   status: z.enum(['active', 'on_leave']).optional(),
 });
 
-const PROFILE_SELECT = 'id, full_name, email, phone, department, role_id, status, created_at, roles(name)';
+// A user can belong to several organizations now, so "employee" rows live on
+// organization_members, not profiles — profiles!user_id disambiguates the
+// embed since organization_members has two FKs into profiles (user_id and
+// invited_by).
+const MEMBER_SELECT = 'user_id, phone, department, role_id, status, created_at, roles(name), profiles!user_id(full_name, email)';
 const INVITE_SELECT = 'id, full_name, email, phone, department, role_id, status, invited_at, roles(name)';
 
-function roleNameFrom(row: any): string | null {
+function roleNameFrom(row: any) {
   const roles = row.roles as { name: string } | { name: string }[] | null;
   return Array.isArray(roles) ? roles[0]?.name ?? null : roles?.name ?? null;
 }
 
+function profileFrom(row: any) {
+  const p = row.profiles as { full_name: string; email: string } | { full_name: string; email: string }[] | null;
+  return Array.isArray(p) ? p[0] : p;
+}
+
 function memberFromRow(row: any) {
+  const profile = profileFrom(row);
   return {
-    id: row.id, kind: 'member', fullName: row.full_name ?? '(no name)', email: row.email,
+    id: row.user_id, kind: 'member', fullName: profile?.full_name ?? '(no name)', email: profile?.email ?? null,
     phone: row.phone, department: row.department, roleId: row.role_id, roleName: roleNameFrom(row),
     status: row.status, createdAt: row.created_at,
   };
@@ -47,65 +58,107 @@ function inviteFromRow(row: any) {
 
 const app = new Hono<{ Bindings: Bindings }>();
 
-// A single logical list merging real members and pending invites, done
-// server-side (was 2 client round trips, frontend/src/lib/employees.ts
-// previously merged them in the browser).
+// requireOrg (not requireUser) + an explicit organization_id filter — unlike
+// the old single-org model, organization_members' self-view RLS policy is
+// deliberately NOT org-scoped (a multi-org switcher needs to see every org a
+// user belongs to), so an unfiltered select here would return this caller's
+// rows across every org they're in, not just the active one.
 app.get('/api/employees', async (c) => {
-  const auth = await requireUser(c);
+  const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
-  const [profiles, invites] = await Promise.all([
-    auth.client.from('profiles').select(PROFILE_SELECT).not('role_id', 'is', null).order('created_at', { ascending: false }),
+  const [members, invites] = await Promise.all([
+    auth.client
+      .from('organization_members')
+      .select(MEMBER_SELECT)
+      .eq('organization_id', auth.organizationId)
+      .order('created_at', { ascending: false }),
     auth.client.from('employee_invites').select(INVITE_SELECT).order('invited_at', { ascending: false }),
   ]);
-  if (profiles.error) return sendPgError(c, profiles.error);
+  if (members.error) return sendPgError(c, members.error);
   if (invites.error) return sendPgError(c, invites.error);
-  return c.json([...(profiles.data ?? []).map(memberFromRow), ...(invites.data ?? []).map(inviteFromRow)]);
+  return c.json([...(members.data ?? []).map(memberFromRow), ...(invites.data ?? []).map(inviteFromRow)]);
 });
 
 app.patch('/api/employees/:id', validate('param', uuidParam), validate('json', updateBody), async (c) => {
-  const auth = await requireUser(c);
+  const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
   const b = c.req.valid('json');
-  const patch: Record<string, any> = {};
+  const patch: Record<string, any> = { updated_at: new Date().toISOString() };
   if (b.phone !== undefined) patch.phone = b.phone || null;
   if (b.department !== undefined) patch.department = b.department || null;
   if (b.roleId !== undefined) patch.role_id = b.roleId;
   if (b.status !== undefined) patch.status = b.status;
 
-  const { error } = await auth.client.from('profiles').update(patch).eq('id', c.req.valid('param').id);
+  const { error } = await auth.client
+    .from('organization_members')
+    .update(patch)
+    .eq('user_id', c.req.valid('param').id)
+    .eq('organization_id', auth.organizationId);
   if (error) return sendPgError(c, error);
   return c.body(null, 204);
 });
 
-// Soft-remove — status = 'removed' cuts off data access (see the
-// current_organization_id() fail-closed change) but doesn't revoke an
-// already-issued session token. Deliberately its own action (not a
-// generic PATCH ...status) matching how EmployeeUpdateInput's status
-// union excludes 'removed'.
+// Soft-remove — status = 'removed' cuts off data access to this one org (the
+// current_organization_id() fail-closed check) without touching the
+// person's membership in any other org, and without revoking an
+// already-issued session token.
 app.post('/api/employees/:id/remove', validate('param', uuidParam), async (c) => {
-  const auth = await requireUser(c);
+  const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
-  const { error } = await auth.client.from('profiles').update({ status: 'removed' }).eq('id', c.req.valid('param').id);
+  const { error } = await auth.client
+    .from('organization_members')
+    .update({ status: 'removed', updated_at: new Date().toISOString() })
+    .eq('user_id', c.req.valid('param').id)
+    .eq('organization_id', auth.organizationId);
   if (error) return sendPgError(c, error);
   return c.body(null, 204);
 });
 
-// Creates the employee_invites staging row first (still via the caller's
-// RLS-scoped client — employees.add still gates this exactly as before),
-// then a real Supabase Auth account via the Admin API. The `handle_new_user`
-// trigger (supabase/migrations/20260711120000_invite_attach_on_signup.sql)
-// finds this row by email the instant the new auth.users row is created and
-// attaches organization_id/role_id/phone/department atomically, then deletes
-// it — so if the Admin API call fails, the staging row is rolled back here
-// (compensating delete) rather than left dangling with no invite ever sent.
+// Two distinct paths depending on whether the invited email already has an
+// account (in this org or, now that an account can belong to several orgs,
+// any org): admin.inviteUserByEmail() only works for a genuinely new email —
+// it fails outright for one that's already registered. The service-role
+// lookup below decides which path to take server-side, so the frontend form
+// doesn't need to know in advance.
 app.post('/api/employees/invites', validate('json', inviteBody), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
   const b = c.req.valid('json');
+  const svc = createServiceClient(c.env);
+
+  const { data: existing, error: lookupError } = await svc
+    .from('profiles')
+    .select('id')
+    .eq('email', b.email)
+    .maybeSingle();
+  if (lookupError) return sendPgError(c, lookupError);
+
+  if (existing) {
+    const { error: rpcError } = await auth.client.rpc('invite_existing_user_to_organization', {
+      p_target_user_id: existing.id,
+      p_role_id: b.roleId,
+      p_department: b.department || null,
+      p_phone: b.phone || null,
+    });
+    if (rpcError) return sendPgError(c, rpcError);
+
+    const { data: org } = await auth.client.from('organizations').select('name').eq('id', auth.organizationId).single();
+    let emailSent = true;
+    try {
+      await sendInviteEmail(c.env, { to: b.email, orgName: org?.name ?? 'your team', appUrl: c.env.PUBLIC_APP_URL });
+    } catch {
+      // Non-critical — the pending invite already exists and is visible
+      // in-app regardless of whether the notification email went out.
+      emailSent = false;
+    }
+
+    return c.json({ path: 'existing_user', emailSent }, 201);
+  }
+
   const { data: invite, error } = await auth.client
     .from('employee_invites')
     .insert({
@@ -121,7 +174,6 @@ app.post('/api/employees/invites', validate('json', inviteBody), async (c) => {
     .single();
   if (error) return sendPgError(c, error);
 
-  const svc = createServiceClient(c.env);
   const { error: inviteError } = await svc.auth.admin.inviteUserByEmail(b.email, {
     data: { full_name: b.fullName },
     redirectTo: c.env.PUBLIC_APP_URL,
@@ -141,7 +193,7 @@ app.post('/api/employees/invites', validate('json', inviteBody), async (c) => {
     );
   }
 
-  return c.body(null, 201);
+  return c.json({ path: 'new_account' }, 201);
 });
 
 app.delete('/api/employees/invites/:id', validate('param', uuidParam), async (c) => {

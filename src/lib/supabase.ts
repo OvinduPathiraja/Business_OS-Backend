@@ -13,15 +13,26 @@ export type Bindings = {
   // in Supabase Dashboard -> Authentication -> URL Configuration.
   PUBLIC_APP_URL: string;
   RATE_LIMITER: RateLimit;
+  // Transactional email for the existing-user org-invite notification (see
+  // backend/src/lib/email.ts) — Resend, the one email provider this project
+  // uses. Nothing else sends real email; Supabase Auth's own emails (new-
+  // account invites) don't go through this.
+  RESEND_API_KEY: string;
+  EMAIL_FROM_ADDRESS: string;
 };
 
 // Runs every query *as* the calling user (their JWT is forwarded as the
 // bearer token), so Postgres RLS — not hand-rolled auth logic here — decides
 // what they can see or do. This is the client every route should use unless
-// a specific operation genuinely requires bypassing RLS.
-export function createUserClient(env: Bindings, accessToken: string) {
+// a specific operation genuinely requires bypassing RLS. `organizationId`,
+// when present, is forwarded as X-Organization-Id — current_organization_id()
+// reads it straight off the PostgREST request GUCs to resolve which of the
+// caller's (possibly several) org memberships is active for this request.
+export function createUserClient(env: Bindings, accessToken: string, organizationId?: string | null) {
+  const headers: Record<string, string> = { Authorization: `Bearer ${accessToken}` };
+  if (organizationId) headers['X-Organization-Id'] = organizationId;
   return createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: `Bearer ${accessToken}` } },
+    global: { headers },
     auth: { autoRefreshToken: false, persistSession: false },
   });
 }

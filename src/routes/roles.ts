@@ -73,10 +73,17 @@ app.get('/api/role-permissions', async (c) => {
 });
 
 app.get('/api/roles/employee-counts', async (c) => {
-  const auth = await requireUser(c);
+  const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
-  const { data, error } = await auth.client.from('profiles').select('role_id').not('role_id', 'is', null);
+  // organization_members' self-view RLS isn't org-scoped (a multi-org
+  // switcher needs to see every org a user belongs to), so this needs an
+  // explicit filter — an unfiltered select would count this caller's own
+  // memberships across every org they're in, not just this org's roster.
+  const { data, error } = await auth.client
+    .from('organization_members')
+    .select('role_id')
+    .eq('organization_id', auth.organizationId);
   if (error) return sendPgError(c, error);
   const counts: Record<string, number> = {};
   (data ?? []).forEach((r: any) => {

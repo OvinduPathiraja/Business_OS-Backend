@@ -4,6 +4,7 @@ import type { Bindings } from '../lib/supabase.js';
 import { requireUser, requireOrg } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
+import { uuidParam } from '../lib/schemas.js';
 
 const createOrgBody = z.object({ name: z.string().trim().min(1) });
 const updateCurrencyBody = z.object({ currency: z.string().length(3) });
@@ -24,6 +25,57 @@ app.post('/api/organizations', validate('json', createOrgBody), async (c) => {
   const { data, error } = await auth.client.rpc('create_organization', { org_name: c.req.valid('json').name });
   if (error) return sendPgError(c, error);
   return c.json({ organizationId: data }, 201);
+});
+
+// The following 4 routes all act on a membership the caller has in an
+// explicit :id org — deliberately requireUser, not requireOrg, since the
+// target org is frequently NOT the caller's currently-active one (switching
+// away from it, or accepting/declining an invite to an org they've never
+// been active in yet). Each is a thin wrapper over the corresponding
+// self-service RPC, which does the real membership validation.
+
+app.post('/api/organizations/:id/switch', validate('param', uuidParam), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const { error } = await auth.client.rpc('switch_active_organization', {
+    p_organization_id: c.req.valid('param').id,
+  });
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
+app.post('/api/organizations/:id/accept', validate('param', uuidParam), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const { error } = await auth.client.rpc('accept_organization_invite', {
+    p_organization_id: c.req.valid('param').id,
+  });
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
+app.post('/api/organizations/:id/decline', validate('param', uuidParam), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const { error } = await auth.client.rpc('decline_organization_invite', {
+    p_organization_id: c.req.valid('param').id,
+  });
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
+app.post('/api/organizations/:id/leave', validate('param', uuidParam), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const { error } = await auth.client.rpc('leave_organization', {
+    p_organization_id: c.req.valid('param').id,
+  });
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
 });
 
 app.patch('/api/organization', validate('json', updateCurrencyBody), async (c) => {
