@@ -80,6 +80,21 @@ app.post('/api/organizations/:id/leave', validate('param', uuidParam), async (c)
   return c.body(null, 204);
 });
 
+// Permanent, owner-only — delete_organization() gates on is_owner and
+// cascades every row this tenant owns. requireUser (not requireOrg), same
+// reasoning as the 4 routes above: the target org isn't necessarily the
+// caller's currently-active one.
+app.post('/api/organizations/:id/delete', validate('param', uuidParam), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const { error } = await auth.client.rpc('delete_organization', {
+    p_organization_id: c.req.valid('param').id,
+  });
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
 app.patch('/api/organization', validate('json', updateCurrencyBody), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
