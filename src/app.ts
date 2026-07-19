@@ -15,6 +15,7 @@ import financeRoutes from './routes/finance.js';
 import vendorsRoutes from './routes/vendors.js';
 import payablesRoutes from './routes/payables.js';
 import bankRoutes from './routes/bank.js';
+import ledgersRoutes from './routes/ledgers.js';
 import taxesRoutes from './routes/taxes.js';
 import rolesRoutes from './routes/roles.js';
 import employeesRoutes from './routes/employees.js';
@@ -76,6 +77,7 @@ export function buildApp() {
   app.route('/', vendorsRoutes);
   app.route('/', payablesRoutes);
   app.route('/', bankRoutes);
+  app.route('/', ledgersRoutes);
   app.route('/', taxesRoutes);
   app.route('/', rolesRoutes);
   app.route('/', employeesRoutes);

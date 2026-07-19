@@ -16,9 +16,20 @@ const paragraphRow = z.object({
   text: z.string().trim().min(1).max(1000),
 });
 
+// Bounds mirror PAGE_SIZE_PRESETS in frontend/src/lib/invoiceTemplate.ts —
+// the min/max width and height across A4/Letter/Legal/A5, so a custom page
+// size can't be smaller or larger than any standard invoice paper size on
+// either axis.
+const pageConfig = z.object({
+  preset: z.enum(['A4', 'Letter', 'Legal', 'A5', 'custom']),
+  widthMm: z.number().min(148).max(216),
+  heightMm: z.number().min(210).max(356),
+});
+
 export const invoiceTemplateSchema = z.object({
   version: z.literal(1),
   preset: z.enum(['classic', 'modern', 'minimal', 'custom']),
+  page: pageConfig,
   sections: z.object({
     header: z.object({
       variant: z.enum(['classic', 'banner', 'centered', 'compact']),
