@@ -14,6 +14,7 @@ const inviteBody = z.object({
   phone: z.string().optional().nullable(),
   department: z.string().optional().nullable(),
   roleId: z.string().uuid(),
+  branchIds: z.array(z.string().uuid()).optional(),
 });
 
 const updateBody = z.object({
@@ -21,6 +22,7 @@ const updateBody = z.object({
   department: z.string().optional().nullable(),
   roleId: z.string().uuid().optional(),
   status: z.enum(['active', 'on_leave']).optional(),
+  branchIds: z.array(z.string().uuid()).optional(),
 });
 
 // A user can belong to several organizations now, so "employee" rows live on
@@ -40,19 +42,23 @@ function profileFrom(row: any) {
   return Array.isArray(p) ? p[0] : p;
 }
 
-function memberFromRow(row: any) {
+// Empty array = unrestricted (access to every branch in the org) — see the
+// schema comment in supabase/migrations/20260719140000_employee_branch_access.sql
+// for why "zero rows" was chosen as the default instead of an explicit
+// "all branches" flag.
+function memberFromRow(row: any, branchIds: string[]) {
   const profile = profileFrom(row);
   return {
     id: row.user_id, kind: 'member', fullName: profile?.full_name ?? '(no name)', email: profile?.email ?? null,
     phone: row.phone, department: row.department, roleId: row.role_id, roleName: roleNameFrom(row),
-    status: row.status, createdAt: row.created_at,
+    status: row.status, createdAt: row.created_at, branchIds,
   };
 }
-function inviteFromRow(row: any) {
+function inviteFromRow(row: any, branchIds: string[]) {
   return {
     id: row.id, kind: 'invited', fullName: row.full_name, email: row.email,
     phone: row.phone, department: row.department, roleId: row.role_id, roleName: roleNameFrom(row),
-    status: 'invited', createdAt: row.invited_at,
+    status: 'invited', createdAt: row.invited_at, branchIds,
   };
 }
 
@@ -67,17 +73,38 @@ app.get('/api/employees', async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
-  const [members, invites] = await Promise.all([
+  const [members, invites, memberBranches, inviteBranches] = await Promise.all([
     auth.client
       .from('organization_members')
       .select(MEMBER_SELECT)
       .eq('organization_id', auth.organizationId)
       .order('created_at', { ascending: false }),
     auth.client.from('employee_invites').select(INVITE_SELECT).order('invited_at', { ascending: false }),
+    auth.client.from('organization_member_branches').select('user_id, branch_id').eq('organization_id', auth.organizationId),
+    auth.client.from('employee_invite_branches').select('invite_id, branch_id'),
   ]);
   if (members.error) return sendPgError(c, members.error);
   if (invites.error) return sendPgError(c, invites.error);
-  return c.json([...(members.data ?? []).map(memberFromRow), ...(invites.data ?? []).map(inviteFromRow)]);
+  if (memberBranches.error) return sendPgError(c, memberBranches.error);
+  if (inviteBranches.error) return sendPgError(c, inviteBranches.error);
+
+  const branchesByMember = new Map<string, string[]>();
+  for (const row of memberBranches.data ?? []) {
+    const list = branchesByMember.get(row.user_id) ?? [];
+    list.push(row.branch_id);
+    branchesByMember.set(row.user_id, list);
+  }
+  const branchesByInvite = new Map<string, string[]>();
+  for (const row of inviteBranches.data ?? []) {
+    const list = branchesByInvite.get(row.invite_id) ?? [];
+    list.push(row.branch_id);
+    branchesByInvite.set(row.invite_id, list);
+  }
+
+  return c.json([
+    ...(members.data ?? []).map((row) => memberFromRow(row, branchesByMember.get(row.user_id) ?? [])),
+    ...(invites.data ?? []).map((row) => inviteFromRow(row, branchesByInvite.get(row.id) ?? [])),
+  ]);
 });
 
 app.patch('/api/employees/:id', validate('param', uuidParam), validate('json', updateBody), async (c) => {
@@ -97,6 +124,15 @@ app.patch('/api/employees/:id', validate('param', uuidParam), validate('json', u
     .eq('user_id', c.req.valid('param').id)
     .eq('organization_id', auth.organizationId);
   if (error) return sendPgError(c, error);
+
+  if (b.branchIds !== undefined) {
+    const { error: branchError } = await auth.client.rpc('set_member_branch_access', {
+      p_target_user_id: c.req.valid('param').id,
+      p_branch_ids: b.branchIds,
+    });
+    if (branchError) return sendPgError(c, branchError);
+  }
+
   return c.body(null, 204);
 });
 
@@ -143,6 +179,7 @@ app.post('/api/employees/invites', validate('json', inviteBody), async (c) => {
       p_role_id: b.roleId,
       p_department: b.department || null,
       p_phone: b.phone || null,
+      p_branch_ids: b.branchIds && b.branchIds.length > 0 ? b.branchIds : null,
     });
     if (rpcError) return sendPgError(c, rpcError);
 
@@ -173,6 +210,16 @@ app.post('/api/employees/invites', validate('json', inviteBody), async (c) => {
     .select('id')
     .single();
   if (error) return sendPgError(c, error);
+
+  if (b.branchIds && b.branchIds.length > 0) {
+    const { error: branchError } = await auth.client
+      .from('employee_invite_branches')
+      .insert(b.branchIds.map((branchId) => ({ invite_id: invite.id, branch_id: branchId })));
+    if (branchError) {
+      await auth.client.from('employee_invites').delete().eq('id', invite.id);
+      return sendPgError(c, branchError);
+    }
+  }
 
   const { error: inviteError } = await svc.auth.admin.inviteUserByEmail(b.email, {
     data: { full_name: b.fullName },
