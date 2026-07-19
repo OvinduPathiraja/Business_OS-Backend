@@ -23,9 +23,10 @@ const serviceBody = z.object({
   allowsSlot: z.boolean().optional(),
   tint: z.string().optional(),
   icon: z.string().optional(),
+  barcode: z.string().optional().nullable(),
 });
 
-const SELECT = 'id, organization_id, name, description, price, duration_options, allows_time, allows_slot, tint, icon';
+const SELECT = 'id, organization_id, name, description, price, duration_options, allows_time, allows_slot, tint, icon, barcode';
 
 function fromRow(row: any) {
   return {
@@ -39,6 +40,7 @@ function fromRow(row: any) {
     allowsSlot: row.allows_slot,
     tint: row.tint,
     icon: row.icon,
+    barcode: row.barcode,
   };
 }
 
@@ -51,7 +53,9 @@ app.get('/api/services', validate('query', listQuery), async (c) => {
   const { search, sort, order, limit, offset } = c.req.valid('query');
   let query = auth.client.from('services').select(SELECT, { count: 'exact' })
     .order(sort ? SORT_COLUMNS[sort] : 'name', { ascending: sort ? order === 'asc' : true });
-  if (search) query = query.ilike('name', `%${search}%`);
+  // Matches on barcode too so a scanned code (New Order / Services scan
+  // flow) surfaces the right row without a separate lookup endpoint.
+  if (search) query = query.or(`name.ilike.%${search}%,barcode.ilike.%${search}%`);
   query = query.range(offset, offset + limit - 1);
 
   const { data, error, count } = await query;
@@ -77,6 +81,7 @@ app.post('/api/services', validate('json', serviceBody), async (c) => {
       allows_slot: b.allowsSlot ?? true,
       ...(b.tint ? { tint: b.tint } : {}),
       ...(b.icon ? { icon: b.icon } : {}),
+      barcode: b.barcode || null,
     })
     .select(SELECT)
     .single();
@@ -100,6 +105,7 @@ app.patch('/api/services/:id', validate('param', uuidParam), validate('json', se
       allows_slot: b.allowsSlot ?? true,
       ...(b.tint ? { tint: b.tint } : {}),
       ...(b.icon ? { icon: b.icon } : {}),
+      barcode: b.barcode || null,
     })
     .eq('id', c.req.valid('param').id)
     .select(SELECT)

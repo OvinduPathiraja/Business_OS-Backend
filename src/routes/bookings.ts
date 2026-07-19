@@ -45,6 +45,7 @@ const convertBody = z.object({
   customerId: z.string().uuid().nullable(),
   customerName: z.string().trim().min(1),
   subtotal: z.number(),
+  discount: z.number().min(0).optional(),
   tax: z.number(),
   total: z.number(),
   items: z.array(lineItemSchema).min(1),
@@ -185,6 +186,7 @@ app.post('/api/bookings/:id/convert', validate('param', uuidParam), validate('js
     p_notes: notes,
     p_payment_method: b.paymentMethod,
     p_branch_id: b.branchId || null,
+    p_discount: b.discount ?? 0,
   });
   if (error) return sendPgError(c, error);
   return c.json({ orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber, branchId: data.branchId }, 201);

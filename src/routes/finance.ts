@@ -5,6 +5,7 @@ import { requireUser, requireOrg } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
+import { invoiceTemplateSchema } from '../lib/invoiceTemplateSchema.js';
 
 const INVOICE_STATUSES = ['draft', 'sent', 'paid', 'overdue', 'void', 'refunded'] as const;
 const PAYMENT_METHODS = ['card', 'cash', 'bank_transfer', 'wallet'] as const;
@@ -19,6 +20,7 @@ const updateBody = z.object({
   issueDate: z.string(),
   dueDate: z.string(),
   subtotal: z.number(),
+  discount: z.number().min(0).optional(),
   tax: z.number(),
   notes: z.string().optional().nullable(),
 });
@@ -40,9 +42,10 @@ const invoiceSettingsBody = z.object({
   showTax: z.boolean().optional(),
   showDueDate: z.boolean().optional(),
   showPaymentHistory: z.boolean().optional(),
+  template: invoiceTemplateSchema.optional().nullable(),
 });
 
-const INVOICE_SETTINGS_SELECT = 'logo_url, address, phone, email, accent_color, footer_text, terms_text, show_tax, show_due_date, show_payment_history';
+const INVOICE_SETTINGS_SELECT = 'logo_url, address, phone, email, accent_color, footer_text, terms_text, show_tax, show_due_date, show_payment_history, template';
 
 function invoiceSettingsFromRow(row: any) {
   return {
@@ -56,16 +59,18 @@ function invoiceSettingsFromRow(row: any) {
     showTax: row?.show_tax ?? true,
     showDueDate: row?.show_due_date ?? true,
     showPaymentHistory: row?.show_payment_history ?? true,
+    template: row?.template ?? null,
   };
 }
 
-const INVOICE_SELECT = 'id, organization_id, order_id, customer_id, customer_name, invoice_number, status, issue_date, due_date, subtotal, tax, total, amount_paid, notes, created_at';
+const INVOICE_SELECT = 'id, organization_id, order_id, customer_id, customer_name, invoice_number, status, issue_date, due_date, subtotal, discount, tax, total, amount_paid, notes, created_at';
 
 function invoiceFromRow(row: any) {
   return {
     id: row.id, organizationId: row.organization_id, orderId: row.order_id, customerId: row.customer_id,
     customerName: row.customer_name, invoiceNumber: row.invoice_number, status: row.status,
-    issueDate: row.issue_date, dueDate: row.due_date, subtotal: Number(row.subtotal), tax: Number(row.tax),
+    issueDate: row.issue_date, dueDate: row.due_date, subtotal: Number(row.subtotal),
+    discount: Number(row.discount ?? 0), tax: Number(row.tax),
     total: Number(row.total), amountPaid: Number(row.amount_paid), notes: row.notes, createdAt: row.created_at,
   };
 }
@@ -96,8 +101,9 @@ app.patch('/api/invoices/:id', validate('param', uuidParam), validate('json', up
     .from('invoices')
     .update({
       customer_id: b.customerId, customer_name: b.customerName, invoice_number: b.invoiceNumber,
-      status: b.status, issue_date: b.issueDate, due_date: b.dueDate, subtotal: b.subtotal, tax: b.tax,
-      total: b.subtotal + b.tax, notes: b.notes || null, updated_at: new Date().toISOString(),
+      status: b.status, issue_date: b.issueDate, due_date: b.dueDate, subtotal: b.subtotal,
+      discount: b.discount ?? 0, tax: b.tax,
+      total: b.subtotal - (b.discount ?? 0) + b.tax, notes: b.notes || null, updated_at: new Date().toISOString(),
     })
     .eq('id', c.req.valid('param').id)
     .select(INVOICE_SELECT)
@@ -146,6 +152,7 @@ app.patch('/api/organization/invoice-settings', validate('json', invoiceSettings
       ...(b.showTax !== undefined ? { show_tax: b.showTax } : {}),
       ...(b.showDueDate !== undefined ? { show_due_date: b.showDueDate } : {}),
       ...(b.showPaymentHistory !== undefined ? { show_payment_history: b.showPaymentHistory } : {}),
+      ...(b.template !== undefined ? { template: b.template } : {}),
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'organization_id' }
