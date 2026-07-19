@@ -11,6 +11,9 @@ const ENTRY_DIRECTIONS = ['credit', 'debit'] as const;
 const ledgerBody = z.object({
   name: z.string().trim().min(1),
   description: z.string().trim().optional().nullable(),
+  // A frontend icon name — unknown values fall back client-side, so only
+  // length is constrained here.
+  icon: z.string().trim().max(40).optional().nullable(),
 });
 
 const entryCreateBody = z.object({
@@ -20,7 +23,7 @@ const entryCreateBody = z.object({
   entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 
-const LEDGER_SELECT = 'id, organization_id, name, description, created_at';
+const LEDGER_SELECT = 'id, organization_id, name, description, icon, created_at';
 const ENTRY_SELECT = 'id, organization_id, ledger_id, direction, amount, description, entry_date, created_by, created_at';
 
 function entryFromRow(row: any) {
@@ -60,8 +63,8 @@ app.get('/api/ledgers', async (c) => {
     const t = totals.get(row.id) ?? { count: 0, moneyIn: 0, moneyOut: 0 };
     return {
       id: row.id, organizationId: row.organization_id, name: row.name, description: row.description,
-      createdAt: row.created_at, entryCount: t.count, moneyIn: t.moneyIn, moneyOut: t.moneyOut,
-      net: t.moneyIn - t.moneyOut,
+      icon: row.icon, createdAt: row.created_at, entryCount: t.count, moneyIn: t.moneyIn,
+      moneyOut: t.moneyOut, net: t.moneyIn - t.moneyOut,
     };
   }));
 });
@@ -73,13 +76,13 @@ app.post('/api/ledgers', validate('json', ledgerBody), async (c) => {
   const b = c.req.valid('json');
   const { data, error } = await auth.client
     .from('ledgers')
-    .insert({ organization_id: auth.organizationId, name: b.name, description: b.description || null })
+    .insert({ organization_id: auth.organizationId, name: b.name, description: b.description || null, icon: b.icon || null })
     .select(LEDGER_SELECT)
     .single();
   if (error) return sendPgError(c, error);
   return c.json({
     id: data.id, organizationId: data.organization_id, name: data.name, description: data.description,
-    createdAt: data.created_at, entryCount: 0, moneyIn: 0, moneyOut: 0, net: 0,
+    icon: data.icon, createdAt: data.created_at, entryCount: 0, moneyIn: 0, moneyOut: 0, net: 0,
   }, 201);
 });
 
@@ -90,12 +93,12 @@ app.patch('/api/ledgers/:id', validate('param', uuidParam), validate('json', led
   const b = c.req.valid('json');
   const { data, error } = await auth.client
     .from('ledgers')
-    .update({ name: b.name, description: b.description || null, updated_at: new Date().toISOString() })
+    .update({ name: b.name, description: b.description || null, icon: b.icon || null, updated_at: new Date().toISOString() })
     .eq('id', c.req.valid('param').id)
     .select(LEDGER_SELECT)
     .single();
   if (error) return sendPgError(c, error);
-  return c.json({ id: data.id, organizationId: data.organization_id, name: data.name, description: data.description, createdAt: data.created_at });
+  return c.json({ id: data.id, organizationId: data.organization_id, name: data.name, description: data.description, icon: data.icon, createdAt: data.created_at });
 });
 
 app.delete('/api/ledgers', validate('json', bulkIdsBody), async (c) => {
