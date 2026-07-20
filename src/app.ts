@@ -27,6 +27,7 @@ import printersRoutes from './routes/printers.js';
 import departmentsRoutes from './routes/departments.js';
 import tasksRoutes from './routes/tasks.js';
 import viewsRoutes from './routes/views.js';
+import impersonationRoutes from './routes/impersonation.js';
 
 export function buildApp() {
   const app = new Hono<{ Bindings: Bindings }>();
@@ -92,6 +93,7 @@ export function buildApp() {
   app.route('/', departmentsRoutes);
   app.route('/', tasksRoutes);
   app.route('/', viewsRoutes);
+  app.route('/', impersonationRoutes);
 
   return app;
 }

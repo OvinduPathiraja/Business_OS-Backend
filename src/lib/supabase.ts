@@ -50,6 +50,17 @@ export function createServiceClient(env: Bindings) {
   });
 }
 
+// A plain, unauthenticated client — used only to exchange a magic-link
+// token_hash for a real session via verifyOtp() (see
+// backend/src/routes/impersonation.ts, the "view as" admin feature).
+// verifyOtp() authenticates by the token_hash itself, so this needs no
+// bearer token and no service-role key.
+export function createAnonClient(env: Bindings) {
+  return createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
+
 export function bearerTokenFrom(authHeader: string | undefined | null): string | null {
   if (!authHeader?.startsWith('Bearer ')) return null;
   const token = authHeader.slice('Bearer '.length).trim();
