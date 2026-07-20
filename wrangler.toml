@@ -24,4 +24,7 @@ period = 60
 # URL Configuration. EMAIL_FROM_ADDRESS must be on a domain verified with Resend.
 [vars]
 PUBLIC_APP_URL = "https://businessos.ovindupathiraja08.workers.dev"
-EMAIL_FROM_ADDRESS = "Business OS <notifications@businessos.example.com>"
+# Sandbox sender (no verified domain yet) — swap to an address on a verified
+# Resend domain once one exists; sandbox only delivers to the Resend
+# account's own registered email.
+EMAIL_FROM_ADDRESS = "Business OS <onboarding@resend.dev>"
