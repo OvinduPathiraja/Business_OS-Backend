@@ -11,6 +11,7 @@ import inventoryRoutes from './routes/inventory.js';
 import branchesRoutes from './routes/branches.js';
 import ordersRoutes from './routes/orders.js';
 import bookingsRoutes from './routes/bookings.js';
+import quotationsRoutes from './routes/quotations.js';
 import financeRoutes from './routes/finance.js';
 import vendorsRoutes from './routes/vendors.js';
 import payablesRoutes from './routes/payables.js';
@@ -77,6 +78,7 @@ export function buildApp() {
   app.route('/', branchesRoutes);
   app.route('/', ordersRoutes);
   app.route('/', bookingsRoutes);
+  app.route('/', quotationsRoutes);
   app.route('/', financeRoutes);
   app.route('/', vendorsRoutes);
   app.route('/', payablesRoutes);
