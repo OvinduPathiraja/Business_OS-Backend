@@ -9,7 +9,6 @@ to the caller's own JWT via `requireUser()`/`requireOrg()` in
 itself. See the repo's `ROADMAP.md` for the full build history — this was
 originally built on Fastify/Node for Railway, then rewritten for Cloudflare
 Workers.
-sample
 
 ## Local development
 
