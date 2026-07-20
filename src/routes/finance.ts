@@ -6,6 +6,7 @@ import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
 import { invoiceTemplateSchema } from '../lib/invoiceTemplateSchema.js';
+import { sendInvoiceEmail } from '../lib/email.js';
 
 const INVOICE_STATUSES = ['draft', 'sent', 'paid', 'overdue', 'void', 'refunded'] as const;
 const PAYMENT_METHODS = ['card', 'cash', 'bank_transfer', 'wallet'] as const;
@@ -29,6 +30,15 @@ const recordPaymentBody = z.object({
   amount: z.number().positive(),
   method: z.enum(PAYMENT_METHODS),
   notes: z.string().optional().nullable(),
+});
+
+const emailInvoiceBody = z.object({
+  to: z.string().trim().email(),
+  subject: z.string().trim().min(1).max(200).optional(),
+  // Pre-rendered by the frontend's buildInvoiceHtml() (same renderer
+  // "Print invoice" uses) — capped well above any real invoice's size so a
+  // signed-in caller can't turn this into an arbitrary large-payload relay.
+  html: z.string().min(1).max(500_000),
 });
 
 const invoiceSettingsBody = z.object({
@@ -212,6 +222,34 @@ app.get('/api/invoices/:id/print', validate('param', uuidParam), async (c) => {
     })),
     invoiceSettings: invoiceSettingsFromRow(settingsRow),
   });
+});
+
+// Relays an already-rendered invoice to a customer via Resend. Deliberately
+// takes the finished HTML from the caller rather than re-fetching and
+// re-rendering server-side — invoice HTML is already built once by
+// buildInvoiceHtml() on the frontend for printing, and this reuses that same
+// output so the emailed invoice always matches what "Print invoice" shows.
+app.post('/api/invoices/:id/email', validate('param', uuidParam), validate('json', emailInvoiceBody), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const { data, error } = await auth.client
+    .from('invoices')
+    .select('invoice_number, organizations(name)')
+    .eq('id', c.req.valid('param').id)
+    .single();
+  if (error) return sendPgError(c, error);
+
+  const row = data as any;
+  const b = c.req.valid('json');
+  const subject = b.subject || `Invoice ${row.invoice_number} from ${row.organizations?.name ?? 'your supplier'}`;
+
+  try {
+    await sendInvoiceEmail(c.env, { to: b.to, subject, html: b.html });
+  } catch (e: any) {
+    return c.json({ error: e.message ?? 'Failed to send invoice email.' }, 502);
+  }
+  return c.body(null, 204);
 });
 
 app.get('/api/invoices/:id/payments', validate('param', uuidParam), async (c) => {
