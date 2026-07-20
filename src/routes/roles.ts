@@ -10,14 +10,16 @@ const roleBody = z.object({
   name: z.string().trim().min(1),
   description: z.string().optional().nullable(),
   color: z.string().optional(),
+  // Custom view accounts on this role land in (org_views) — null clears it.
+  viewId: z.string().uuid().optional().nullable(),
 });
 
 const permissionsBody = z.object({ keys: z.array(z.string()) });
 
-const ROLE_SELECT = 'id, organization_id, name, description, is_owner, color';
+const ROLE_SELECT = 'id, organization_id, name, description, is_owner, color, view_id';
 
 function roleFromRow(row: any) {
-  return { id: row.id, organizationId: row.organization_id, name: row.name, description: row.description, isOwner: row.is_owner, color: row.color };
+  return { id: row.id, organizationId: row.organization_id, name: row.name, description: row.description, isOwner: row.is_owner, color: row.color, viewId: row.view_id };
 }
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -105,6 +107,7 @@ app.post('/api/roles', validate('json', roleBody), async (c) => {
       name: body.name,
       description: body.description || null,
       color: body.color ?? '#6D4AFF',
+      view_id: body.viewId ?? null,
     })
     .select(ROLE_SELECT)
     .single();
@@ -121,7 +124,14 @@ app.patch('/api/roles/:id', validate('param', uuidParam), validate('json', roleB
   const body = c.req.valid('json');
   const { data, error } = await auth.client
     .from('roles')
-    .update({ name: body.name, description: body.description || null, color: body.color })
+    .update({
+      name: body.name,
+      description: body.description || null,
+      color: body.color,
+      // Only touch view_id when the caller sent it — older clients (and the
+      // permissions-only save path) must not silently clear an assignment.
+      ...(body.viewId !== undefined ? { view_id: body.viewId } : {}),
+    })
     .eq('id', c.req.valid('param').id)
     .select(ROLE_SELECT)
     .single();

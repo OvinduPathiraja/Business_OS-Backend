@@ -114,6 +114,64 @@ app.patch('/api/services/:id', validate('param', uuidParam), validate('json', se
   return c.json(fromRow(data));
 });
 
+// ---------------------------------------------------------------------------
+// Workflow steps — the ordered task chain a service runs through after an
+// order is placed (see supabase/migrations/20260720120000_*.sql).
+// ---------------------------------------------------------------------------
+
+const serviceTasksBody = z.object({
+  tasks: z.array(
+    z.object({
+      name: z.string().trim().min(1),
+      description: z.string().optional().nullable(),
+      departmentId: z.string().uuid().optional().nullable(),
+    })
+  ),
+});
+
+const TASK_SELECT = 'id, service_id, department_id, name, description, sort_order';
+
+app.get('/api/services/:id/tasks', validate('param', uuidParam), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const { data, error } = await auth.client
+    .from('service_tasks')
+    .select(TASK_SELECT)
+    .eq('service_id', c.req.valid('param').id)
+    .order('sort_order', { ascending: true });
+  if (error) return sendPgError(c, error);
+  return c.json(
+    (data ?? []).map((row: any) => ({
+      id: row.id,
+      serviceId: row.service_id,
+      departmentId: row.department_id,
+      name: row.name,
+      description: row.description,
+      sortOrder: row.sort_order,
+    }))
+  );
+});
+
+// Replaces the whole chain atomically via the set_service_tasks() RPC — the
+// flowchart editor saves the full workflow in one call (same pattern as
+// set_role_permissions).
+app.put('/api/services/:id/tasks', validate('param', uuidParam), validate('json', serviceTasksBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const { error } = await auth.client.rpc('set_service_tasks', {
+    p_service_id: c.req.valid('param').id,
+    p_tasks: c.req.valid('json').tasks.map((t) => ({
+      name: t.name,
+      description: t.description || null,
+      departmentId: t.departmentId || null,
+    })),
+  });
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
 app.delete('/api/services', validate('json', bulkIdsBody), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;

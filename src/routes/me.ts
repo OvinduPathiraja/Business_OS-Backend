@@ -47,15 +47,37 @@ app.get('/api/me', async (c) => {
   const active = memberships.find((m) => m.organization_id === activeOrganizationId);
 
   let permissions: string[] = [];
+  // The caller's role may point at a custom view (org_views) — an account
+  // without dashboard.view gets locked into it by the frontend shell, the
+  // generalization of the hardcoded Cashier View (see frontend/App.tsx).
+  let view: { id: string; name: string; color: string; config: unknown } | null = null;
   if (active?.role_id) {
-    const { data: permRows, error: permErr } = await auth.client
-      .from('role_permissions')
-      .select('permissions(key)')
-      .eq('role_id', active.role_id);
-    if (permErr) return sendPgError(c, permErr);
-    permissions = (permRows ?? [])
+    const [permResult, roleViewResult] = await Promise.all([
+      auth.client.from('role_permissions').select('permissions(key)').eq('role_id', active.role_id),
+      auth.client.from('roles').select('org_views(id, name, color, config)').eq('id', active.role_id).maybeSingle(),
+    ]);
+    if (permResult.error) return sendPgError(c, permResult.error);
+    if (roleViewResult.error) return sendPgError(c, roleViewResult.error);
+    permissions = (permResult.data ?? [])
       .map((r: any) => (Array.isArray(r.permissions) ? r.permissions[0]?.key : r.permissions?.key))
       .filter(Boolean);
+    const v: any = roleViewResult.data?.org_views;
+    const viewRow = Array.isArray(v) ? v[0] : v;
+    if (viewRow) view = { id: viewRow.id, name: viewRow.name, color: viewRow.color, config: viewRow.config };
+  }
+
+  // Which department (if any) this member belongs to in the active org —
+  // drives the Tasks screen's default "my department" scope.
+  let departmentId: string | null = null;
+  if (activeOrganizationId) {
+    const { data: memberRow, error: memberErr } = await auth.client
+      .from('organization_members')
+      .select('department_id')
+      .eq('organization_id', activeOrganizationId)
+      .eq('user_id', auth.userId)
+      .maybeSingle();
+    if (memberErr) return sendPgError(c, memberErr);
+    departmentId = memberRow?.department_id ?? null;
   }
 
   return c.json({
@@ -79,6 +101,8 @@ app.get('/api/me', async (c) => {
     roleName: active?.role_name ?? null,
     roleIsOwner: active?.role_is_owner ?? false,
     permissions,
+    departmentId,
+    view,
   });
 });
 

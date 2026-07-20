@@ -20,6 +20,9 @@ const inviteBody = z.object({
 const updateBody = z.object({
   phone: z.string().optional().nullable(),
   department: z.string().optional().nullable(),
+  // Structured department link (departments table) — the free-text
+  // `department` above is the legacy label kept for invite rows.
+  departmentId: z.string().uuid().optional().nullable(),
   roleId: z.string().uuid().optional(),
   status: z.enum(['active', 'on_leave']).optional(),
   branchIds: z.array(z.string().uuid()).optional(),
@@ -29,7 +32,7 @@ const updateBody = z.object({
 // organization_members, not profiles — profiles!user_id disambiguates the
 // embed since organization_members has two FKs into profiles (user_id and
 // invited_by).
-const MEMBER_SELECT = 'user_id, phone, department, role_id, status, created_at, roles(name), profiles!user_id(full_name, email)';
+const MEMBER_SELECT = 'user_id, phone, department, department_id, role_id, status, created_at, roles(name), departments(name), profiles!user_id(full_name, email)';
 const INVITE_SELECT = 'id, full_name, email, phone, department, role_id, status, invited_at, roles(name)';
 
 function roleNameFrom(row: any) {
@@ -48,9 +51,15 @@ function profileFrom(row: any) {
 // "all branches" flag.
 function memberFromRow(row: any, branchIds: string[]) {
   const profile = profileFrom(row);
+  // Structured department (department_id -> departments.name) wins over the
+  // legacy free-text label — both are exposed through the same `department`
+  // display field so the Employees screen needs no special-casing.
+  const dept = row.departments as { name: string } | { name: string }[] | null;
+  const deptName = Array.isArray(dept) ? dept[0]?.name ?? null : dept?.name ?? null;
   return {
     id: row.user_id, kind: 'member', fullName: profile?.full_name ?? '(no name)', email: profile?.email ?? null,
-    phone: row.phone, department: row.department, roleId: row.role_id, roleName: roleNameFrom(row),
+    phone: row.phone, department: deptName ?? row.department, departmentId: row.department_id ?? null,
+    roleId: row.role_id, roleName: roleNameFrom(row),
     status: row.status, createdAt: row.created_at, branchIds,
   };
 }
@@ -115,6 +124,7 @@ app.patch('/api/employees/:id', validate('param', uuidParam), validate('json', u
   const patch: Record<string, any> = { updated_at: new Date().toISOString() };
   if (b.phone !== undefined) patch.phone = b.phone || null;
   if (b.department !== undefined) patch.department = b.department || null;
+  if (b.departmentId !== undefined) patch.department_id = b.departmentId;
   if (b.roleId !== undefined) patch.role_id = b.roleId;
   if (b.status !== undefined) patch.status = b.status;
 
