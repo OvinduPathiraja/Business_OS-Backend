@@ -29,6 +29,16 @@ const lineItemSchema = z.object({
   message: 'Each line item must have exactly one of serviceId or variantId.',
 });
 
+// Snapshot of the promotions the checkout auto-applied — stored verbatim in
+// order_promotions by the RPC (amounts are client-computed, like every other
+// checkout figure).
+const appliedPromotionSchema = z.object({
+  promotionId: z.string().uuid(),
+  name: z.string(),
+  rewardType: z.enum(['percent', 'fixed', 'buy_x_get_y']),
+  amount: z.number().min(0),
+});
+
 const completeOrderBody = z.object({
   customerId: z.string().uuid().nullable(),
   customerName: z.string().trim().min(1),
@@ -39,10 +49,12 @@ const completeOrderBody = z.object({
   items: z.array(lineItemSchema).min(1),
   paymentMethod: z.enum(PAYMENT_METHODS),
   branchId: z.string().uuid().optional().nullable(),
+  promotions: z.array(appliedPromotionSchema).optional(),
+  cardTypeId: z.string().uuid().optional().nullable(),
 });
 
 const ORDER_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, discount, tax, total, notes, booking_id, branch_id, created_at, order_items(count)';
-const ORDER_DETAIL_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, discount, tax, total, notes, booking_id, branch_id, created_at, order_items(id, service_id, variant_id, item_name, quantity, unit_price, line_total)';
+const ORDER_DETAIL_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, discount, tax, total, notes, booking_id, branch_id, created_at, order_items(id, service_id, variant_id, item_name, quantity, unit_price, line_total), order_promotions(id, promotion_name, reward_type, amount)';
 
 function orderFromRow(row: any) {
   const itemCountRow = Array.isArray(row.order_items) ? row.order_items[0] : row.order_items;
@@ -55,6 +67,7 @@ function orderFromRow(row: any) {
 
 function orderWithItemsFromRow(row: any) {
   const items: any[] = Array.isArray(row.order_items) ? row.order_items : [];
+  const promotions: any[] = Array.isArray(row.order_promotions) ? row.order_promotions : [];
   return {
     id: row.id, organizationId: row.organization_id, customerId: row.customer_id, customerName: row.customer_name,
     status: row.status, subtotal: Number(row.subtotal), discount: Number(row.discount ?? 0), tax: Number(row.tax), total: Number(row.total),
@@ -62,6 +75,9 @@ function orderWithItemsFromRow(row: any) {
     items: items.map((it) => ({
       id: it.id, serviceId: it.service_id, variantId: it.variant_id, itemName: it.item_name,
       quantity: Number(it.quantity), unitPrice: Number(it.unit_price), lineTotal: Number(it.line_total),
+    })),
+    promotions: promotions.map((p) => ({
+      id: p.id, name: p.promotion_name, rewardType: p.reward_type, amount: Number(p.amount),
     })),
   };
 }
@@ -165,6 +181,8 @@ app.post('/api/orders', validate('json', completeOrderBody), async (c) => {
     p_payment_method: b.paymentMethod,
     p_branch_id: b.branchId || null,
     p_discount: b.discount ?? 0,
+    p_promotions: b.promotions ?? [],
+    p_card_type_id: b.cardTypeId || null,
   });
   if (error) return sendPgError(c, error);
   return c.json({ orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber, branchId: data.branchId, tokenNumber: data.tokenNumber ?? null }, 201);

@@ -14,6 +14,7 @@ const settingsBody = z.object({
   productsEnabled: z.boolean().optional(),
   bookingsEnabled: z.boolean().optional(),
   ticketingEnabled: z.boolean().optional(),
+  promotionsEnabled: z.boolean().optional(),
 });
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -114,12 +115,12 @@ app.get('/api/organization/settings', async (c) => {
 
   const { data, error } = await auth.client
     .from('organization_settings')
-    .select('screen_type, control_size, products_enabled, bookings_enabled, ticketing_enabled')
+    .select('screen_type, control_size, products_enabled, bookings_enabled, ticketing_enabled, promotions_enabled')
     .eq('organization_id', auth.organizationId)
     .maybeSingle();
   if (error) return sendPgError(c, error);
   if (!data) {
-    return c.json({ screenType: 'guided', controlSize: 'comfortable', productsEnabled: false, bookingsEnabled: true, ticketingEnabled: false });
+    return c.json({ screenType: 'guided', controlSize: 'comfortable', productsEnabled: false, bookingsEnabled: true, ticketingEnabled: false, promotionsEnabled: false });
   }
   return c.json({
     screenType: data.screen_type,
@@ -127,6 +128,7 @@ app.get('/api/organization/settings', async (c) => {
     productsEnabled: data.products_enabled,
     bookingsEnabled: data.bookings_enabled,
     ticketingEnabled: data.ticketing_enabled,
+    promotionsEnabled: data.promotions_enabled,
   });
 });
 
@@ -143,6 +145,7 @@ app.patch('/api/organization/settings', validate('json', settingsBody), async (c
       ...(body.productsEnabled !== undefined ? { products_enabled: body.productsEnabled } : {}),
       ...(body.bookingsEnabled !== undefined ? { bookings_enabled: body.bookingsEnabled } : {}),
       ...(body.ticketingEnabled !== undefined ? { ticketing_enabled: body.ticketingEnabled } : {}),
+      ...(body.promotionsEnabled !== undefined ? { promotions_enabled: body.promotionsEnabled } : {}),
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'organization_id' }

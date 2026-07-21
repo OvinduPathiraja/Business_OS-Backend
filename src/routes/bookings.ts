@@ -41,6 +41,13 @@ const lineItemSchema = z.object({
   message: 'Each line item must have exactly one of serviceId or variantId.',
 });
 
+const appliedPromotionSchema = z.object({
+  promotionId: z.string().uuid(),
+  name: z.string(),
+  rewardType: z.enum(['percent', 'fixed', 'buy_x_get_y']),
+  amount: z.number().min(0),
+});
+
 const convertBody = z.object({
   customerId: z.string().uuid().nullable(),
   customerName: z.string().trim().min(1),
@@ -51,6 +58,8 @@ const convertBody = z.object({
   items: z.array(lineItemSchema).min(1),
   paymentMethod: z.enum(PAYMENT_METHODS),
   branchId: z.string().uuid().optional().nullable(),
+  promotions: z.array(appliedPromotionSchema).optional(),
+  cardTypeId: z.string().uuid().optional().nullable(),
 });
 
 const BOOKING_SELECT = 'id, organization_id, customer_id, customer_name, service_id, service_name, booking_type, booking_date, start_hour, end_hour, status, notes, created_at';
@@ -187,6 +196,8 @@ app.post('/api/bookings/:id/convert', validate('param', uuidParam), validate('js
     p_payment_method: b.paymentMethod,
     p_branch_id: b.branchId || null,
     p_discount: b.discount ?? 0,
+    p_promotions: b.promotions ?? [],
+    p_card_type_id: b.cardTypeId || null,
   });
   if (error) return sendPgError(c, error);
   return c.json({ orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber, branchId: data.branchId, tokenNumber: data.tokenNumber ?? null }, 201);
