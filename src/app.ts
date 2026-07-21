@@ -29,6 +29,7 @@ import dashboardRoutes from './routes/dashboard.js';
 import printersRoutes from './routes/printers.js';
 import departmentsRoutes from './routes/departments.js';
 import tasksRoutes from './routes/tasks.js';
+import queueRoutes from './routes/queue.js';
 import viewsRoutes from './routes/views.js';
 import impersonationRoutes from './routes/impersonation.js';
 
@@ -98,6 +99,7 @@ export function buildApp() {
   app.route('/', printersRoutes);
   app.route('/', departmentsRoutes);
   app.route('/', tasksRoutes);
+  app.route('/', queueRoutes);
   app.route('/', viewsRoutes);
   app.route('/', impersonationRoutes);
 

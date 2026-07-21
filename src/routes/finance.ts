@@ -186,7 +186,7 @@ app.get('/api/invoices/:id/print', validate('param', uuidParam), async (c) => {
     .from('invoices')
     .select(
       `${INVOICE_SELECT}, organizations(name), ` +
-      `orders(order_items(item_name, quantity, unit_price, line_total)), ` +
+      `orders(order_items(item_name, quantity, unit_price, line_total), order_tickets(token_number)), ` +
       `bookings(service_name), ` +
       `payments(amount, method, paid_at, notes)`
     )
@@ -196,6 +196,10 @@ app.get('/api/invoices/:id/print', validate('param', uuidParam), async (c) => {
 
   const row = data as any;
   const orderItems: any[] = row.orders?.order_items ?? [];
+  // order_tickets is one-to-one (unique order_id), but PostgREST may embed it
+  // as an object or a single-element array depending on constraint detection.
+  const ticketEmbed = row.orders?.order_tickets;
+  const tokenNumber = (Array.isArray(ticketEmbed) ? ticketEmbed[0]?.token_number : ticketEmbed?.token_number) ?? null;
   const lineItems = orderItems.length > 0
     ? orderItems.map((it) => ({
         name: it.item_name, quantity: Number(it.quantity),
@@ -216,6 +220,7 @@ app.get('/api/invoices/:id/print', validate('param', uuidParam), async (c) => {
   return c.json({
     invoice: invoiceFromRow(row),
     organizationName: row.organizations?.name ?? '',
+    tokenNumber,
     lineItems,
     payments: (row.payments ?? []).map((p: any) => ({
       amount: Number(p.amount), method: p.method, paidAt: p.paid_at, notes: p.notes,

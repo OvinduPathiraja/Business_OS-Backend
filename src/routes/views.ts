@@ -8,7 +8,7 @@ import { uuidParam } from '../lib/schemas.js';
 
 // The panel palette custom views are assembled from. Adding a panel type
 // means: extend this enum + render it in frontend/src/CustomView.tsx.
-const PANELS = ['tasks', 'pos', 'orders'] as const;
+const PANELS = ['tasks', 'pos', 'orders', 'queue'] as const;
 
 const configSchema = z.object({
   panels: z.array(z.enum(PANELS)).min(1),

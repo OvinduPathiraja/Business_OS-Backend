@@ -239,7 +239,7 @@ app.post('/api/quotations/:id/convert', validate('param', uuidParam), validate('
     p_branch_id: b.branchId || null,
   });
   if (error) return sendPgError(c, error);
-  return c.json({ orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber, branchId: data.branchId }, 201);
+  return c.json({ orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber, branchId: data.branchId, tokenNumber: data.tokenNumber ?? null }, 201);
 });
 
 app.get('/api/organization/quotation-settings', async (c) => {

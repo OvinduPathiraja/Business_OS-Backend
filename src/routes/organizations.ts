@@ -13,6 +13,7 @@ const settingsBody = z.object({
   controlSize: z.enum(['comfortable', 'large', 'xlarge']).optional(),
   productsEnabled: z.boolean().optional(),
   bookingsEnabled: z.boolean().optional(),
+  ticketingEnabled: z.boolean().optional(),
 });
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -113,18 +114,19 @@ app.get('/api/organization/settings', async (c) => {
 
   const { data, error } = await auth.client
     .from('organization_settings')
-    .select('screen_type, control_size, products_enabled, bookings_enabled')
+    .select('screen_type, control_size, products_enabled, bookings_enabled, ticketing_enabled')
     .eq('organization_id', auth.organizationId)
     .maybeSingle();
   if (error) return sendPgError(c, error);
   if (!data) {
-    return c.json({ screenType: 'guided', controlSize: 'comfortable', productsEnabled: false, bookingsEnabled: true });
+    return c.json({ screenType: 'guided', controlSize: 'comfortable', productsEnabled: false, bookingsEnabled: true, ticketingEnabled: false });
   }
   return c.json({
     screenType: data.screen_type,
     controlSize: data.control_size,
     productsEnabled: data.products_enabled,
     bookingsEnabled: data.bookings_enabled,
+    ticketingEnabled: data.ticketing_enabled,
   });
 });
 
@@ -140,6 +142,7 @@ app.patch('/api/organization/settings', validate('json', settingsBody), async (c
       ...(body.controlSize ? { control_size: body.controlSize } : {}),
       ...(body.productsEnabled !== undefined ? { products_enabled: body.productsEnabled } : {}),
       ...(body.bookingsEnabled !== undefined ? { bookings_enabled: body.bookingsEnabled } : {}),
+      ...(body.ticketingEnabled !== undefined ? { ticketing_enabled: body.ticketingEnabled } : {}),
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'organization_id' }
