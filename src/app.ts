@@ -15,6 +15,7 @@ import quotationsRoutes from './routes/quotations.js';
 import purchaseOrdersRoutes from './routes/purchaseOrders.js';
 import suppliersRoutes from './routes/suppliers.js';
 import promotionsRoutes from './routes/promotions.js';
+import chargesRoutes from './routes/charges.js';
 import financeRoutes from './routes/finance.js';
 import vendorsRoutes from './routes/vendors.js';
 import payablesRoutes from './routes/payables.js';
@@ -86,6 +87,7 @@ export function buildApp() {
   app.route('/', purchaseOrdersRoutes);
   app.route('/', suppliersRoutes);
   app.route('/', promotionsRoutes);
+  app.route('/', chargesRoutes);
   app.route('/', financeRoutes);
   app.route('/', vendorsRoutes);
   app.route('/', payablesRoutes);

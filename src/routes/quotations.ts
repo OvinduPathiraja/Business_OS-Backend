@@ -26,6 +26,15 @@ const lineItemSchema = z.object({
 
 const listQuery = paginationQuery.extend({ status: z.enum(QUOTATION_STATUSES).optional() });
 
+// Extra charges quoted on top of the items (service charge, delivery, …) —
+// snapshotted into quotation_charges; the aggregate `charges` column is
+// derived from the amounts by the RPC.
+const appliedChargeSchema = z.object({
+  chargeTypeId: z.string().uuid().nullable(),
+  name: z.string().trim().min(1),
+  amount: z.number().min(0),
+});
+
 const saveBody = z.object({
   customerId: z.string().uuid().nullable(),
   customerName: z.string().trim().min(1),
@@ -39,6 +48,7 @@ const saveBody = z.object({
   items: z.array(lineItemSchema).min(1),
   notes: z.string().optional().nullable(),
   branchId: z.string().uuid().optional().nullable(),
+  charges: z.array(appliedChargeSchema).optional(),
 });
 
 const statusBody = z.object({ status: z.enum(QUOTATION_STATUSES) });
@@ -80,8 +90,8 @@ function quotationSettingsFromRow(row: any) {
   };
 }
 
-const QUOTATION_SELECT = 'id, organization_id, customer_id, customer_name, quotation_number, status, issue_date, expiry_date, subtotal, discount, tax, total, notes, branch_id, converted_order_id, converted_at, created_at, quotation_items(count)';
-const QUOTATION_DETAIL_SELECT = 'id, organization_id, customer_id, customer_name, quotation_number, status, issue_date, expiry_date, subtotal, discount, tax, total, notes, branch_id, converted_order_id, converted_at, created_at, quotation_items(id, service_id, variant_id, item_name, quantity, unit_price, line_total)';
+const QUOTATION_SELECT = 'id, organization_id, customer_id, customer_name, quotation_number, status, issue_date, expiry_date, subtotal, discount, charges, tax, total, notes, branch_id, converted_order_id, converted_at, created_at, quotation_items(count)';
+const QUOTATION_DETAIL_SELECT = 'id, organization_id, customer_id, customer_name, quotation_number, status, issue_date, expiry_date, subtotal, discount, charges, tax, total, notes, branch_id, converted_order_id, converted_at, created_at, quotation_items(id, service_id, variant_id, item_name, quantity, unit_price, line_total), quotation_charges(id, charge_type_id, charge_name, amount)';
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
@@ -103,7 +113,7 @@ function quotationFromRow(row: any) {
   return {
     id: row.id, organizationId: row.organization_id, customerId: row.customer_id, customerName: row.customer_name,
     quotationNumber: row.quotation_number, status: effectiveStatus(row), issueDate: row.issue_date, expiryDate: row.expiry_date,
-    subtotal: Number(row.subtotal), discount: Number(row.discount ?? 0), tax: Number(row.tax), total: Number(row.total),
+    subtotal: Number(row.subtotal), discount: Number(row.discount ?? 0), charges: Number(row.charges ?? 0), tax: Number(row.tax), total: Number(row.total),
     notes: row.notes, branchId: row.branch_id, convertedOrderId: row.converted_order_id, convertedAt: row.converted_at,
     itemCount: Number(itemCountRow?.count ?? 0), createdAt: row.created_at,
   };
@@ -111,15 +121,19 @@ function quotationFromRow(row: any) {
 
 function quotationWithItemsFromRow(row: any) {
   const items: any[] = Array.isArray(row.quotation_items) ? row.quotation_items : [];
+  const charges: any[] = Array.isArray(row.quotation_charges) ? row.quotation_charges : [];
   return {
     id: row.id, organizationId: row.organization_id, customerId: row.customer_id, customerName: row.customer_name,
     quotationNumber: row.quotation_number, status: effectiveStatus(row), issueDate: row.issue_date, expiryDate: row.expiry_date,
-    subtotal: Number(row.subtotal), discount: Number(row.discount ?? 0), tax: Number(row.tax), total: Number(row.total),
+    subtotal: Number(row.subtotal), discount: Number(row.discount ?? 0), charges: Number(row.charges ?? 0), tax: Number(row.tax), total: Number(row.total),
     notes: row.notes, branchId: row.branch_id, convertedOrderId: row.converted_order_id, convertedAt: row.converted_at,
     itemCount: items.length, createdAt: row.created_at,
     items: items.map((it) => ({
       id: it.id, serviceId: it.service_id, variantId: it.variant_id, itemName: it.item_name,
       quantity: Number(it.quantity), unitPrice: Number(it.unit_price), lineTotal: Number(it.line_total),
+    })),
+    chargeItems: charges.map((ch) => ({
+      id: ch.id, chargeTypeId: ch.charge_type_id ?? null, name: ch.charge_name, amount: Number(ch.amount),
     })),
   };
 }
@@ -171,6 +185,7 @@ app.post('/api/quotations', validate('json', saveBody), async (c) => {
     p_items: b.items.map((it) => ({ serviceId: it.serviceId ?? null, variantId: it.variantId ?? null, name: it.name, quantity: it.quantity, unitPrice: it.unitPrice })),
     p_notes: b.notes || null,
     p_branch_id: b.branchId || null,
+    p_charges: b.charges ?? [],
   });
   if (error) return sendPgError(c, error);
   return c.json({ quotationId: data.quotationId, quotationNumber: data.quotationNumber }, 201);
@@ -195,6 +210,7 @@ app.patch('/api/quotations/:id', validate('param', uuidParam), validate('json', 
     p_items: b.items.map((it) => ({ serviceId: it.serviceId ?? null, variantId: it.variantId ?? null, name: it.name, quantity: it.quantity, unitPrice: it.unitPrice })),
     p_notes: b.notes || null,
     p_branch_id: b.branchId || null,
+    p_charges: b.charges ?? [],
   });
   if (error) return sendPgError(c, error);
   return c.body(null, 204);

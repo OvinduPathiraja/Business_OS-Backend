@@ -39,6 +39,15 @@ const appliedPromotionSchema = z.object({
   amount: z.number().min(0),
 });
 
+// Snapshot of the extra charges the checkout applied (service charge,
+// delivery, …) — stored verbatim in order_charges by the RPC, which also
+// derives the orders/invoices `charges` aggregate from the amounts.
+const appliedChargeSchema = z.object({
+  chargeTypeId: z.string().uuid().nullable(),
+  name: z.string().trim().min(1),
+  amount: z.number().min(0),
+});
+
 const completeOrderBody = z.object({
   customerId: z.string().uuid().nullable(),
   customerName: z.string().trim().min(1),
@@ -51,16 +60,17 @@ const completeOrderBody = z.object({
   branchId: z.string().uuid().optional().nullable(),
   promotions: z.array(appliedPromotionSchema).optional(),
   cardTypeId: z.string().uuid().optional().nullable(),
+  charges: z.array(appliedChargeSchema).optional(),
 });
 
-const ORDER_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, discount, tax, total, notes, booking_id, branch_id, created_at, order_items(count)';
-const ORDER_DETAIL_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, discount, tax, total, notes, booking_id, branch_id, created_at, order_items(id, service_id, variant_id, item_name, quantity, unit_price, line_total), order_promotions(id, promotion_name, reward_type, amount)';
+const ORDER_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, discount, charges, tax, total, notes, booking_id, branch_id, created_at, order_items(count)';
+const ORDER_DETAIL_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, discount, charges, tax, total, notes, booking_id, branch_id, created_at, order_items(id, service_id, variant_id, item_name, quantity, unit_price, line_total), order_promotions(id, promotion_name, reward_type, amount), order_charges(id, charge_name, amount)';
 
 function orderFromRow(row: any) {
   const itemCountRow = Array.isArray(row.order_items) ? row.order_items[0] : row.order_items;
   return {
     id: row.id, organizationId: row.organization_id, customerId: row.customer_id, customerName: row.customer_name,
-    status: row.status, subtotal: Number(row.subtotal), discount: Number(row.discount ?? 0), tax: Number(row.tax), total: Number(row.total),
+    status: row.status, subtotal: Number(row.subtotal), discount: Number(row.discount ?? 0), charges: Number(row.charges ?? 0), tax: Number(row.tax), total: Number(row.total),
     notes: row.notes, bookingId: row.booking_id, branchId: row.branch_id, itemCount: Number(itemCountRow?.count ?? 0), createdAt: row.created_at,
   };
 }
@@ -68,9 +78,10 @@ function orderFromRow(row: any) {
 function orderWithItemsFromRow(row: any) {
   const items: any[] = Array.isArray(row.order_items) ? row.order_items : [];
   const promotions: any[] = Array.isArray(row.order_promotions) ? row.order_promotions : [];
+  const charges: any[] = Array.isArray(row.order_charges) ? row.order_charges : [];
   return {
     id: row.id, organizationId: row.organization_id, customerId: row.customer_id, customerName: row.customer_name,
-    status: row.status, subtotal: Number(row.subtotal), discount: Number(row.discount ?? 0), tax: Number(row.tax), total: Number(row.total),
+    status: row.status, subtotal: Number(row.subtotal), discount: Number(row.discount ?? 0), charges: Number(row.charges ?? 0), tax: Number(row.tax), total: Number(row.total),
     notes: row.notes, bookingId: row.booking_id, branchId: row.branch_id, itemCount: items.length, createdAt: row.created_at,
     items: items.map((it) => ({
       id: it.id, serviceId: it.service_id, variantId: it.variant_id, itemName: it.item_name,
@@ -78,6 +89,9 @@ function orderWithItemsFromRow(row: any) {
     })),
     promotions: promotions.map((p) => ({
       id: p.id, name: p.promotion_name, rewardType: p.reward_type, amount: Number(p.amount),
+    })),
+    chargeItems: charges.map((ch) => ({
+      id: ch.id, name: ch.charge_name, amount: Number(ch.amount),
     })),
   };
 }
@@ -183,6 +197,7 @@ app.post('/api/orders', validate('json', completeOrderBody), async (c) => {
     p_discount: b.discount ?? 0,
     p_promotions: b.promotions ?? [],
     p_card_type_id: b.cardTypeId || null,
+    p_charges: b.charges ?? [],
   });
   if (error) return sendPgError(c, error);
   return c.json({ orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber, branchId: data.branchId, tokenNumber: data.tokenNumber ?? null }, 201);

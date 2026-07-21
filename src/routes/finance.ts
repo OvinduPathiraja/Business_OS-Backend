@@ -22,6 +22,9 @@ const updateBody = z.object({
   dueDate: z.string(),
   subtotal: z.number(),
   discount: z.number().min(0).optional(),
+  // Extra charges aggregate — set at checkout; the edit form passes the
+  // stored value through so the recomputed total keeps including it.
+  charges: z.number().min(0).optional(),
   tax: z.number(),
   notes: z.string().optional().nullable(),
 });
@@ -73,14 +76,14 @@ function invoiceSettingsFromRow(row: any) {
   };
 }
 
-const INVOICE_SELECT = 'id, organization_id, order_id, customer_id, customer_name, invoice_number, status, issue_date, due_date, subtotal, discount, tax, total, amount_paid, notes, created_at';
+const INVOICE_SELECT = 'id, organization_id, order_id, customer_id, customer_name, invoice_number, status, issue_date, due_date, subtotal, discount, charges, tax, total, amount_paid, notes, created_at';
 
 function invoiceFromRow(row: any) {
   return {
     id: row.id, organizationId: row.organization_id, orderId: row.order_id, customerId: row.customer_id,
     customerName: row.customer_name, invoiceNumber: row.invoice_number, status: row.status,
     issueDate: row.issue_date, dueDate: row.due_date, subtotal: Number(row.subtotal),
-    discount: Number(row.discount ?? 0), tax: Number(row.tax),
+    discount: Number(row.discount ?? 0), charges: Number(row.charges ?? 0), tax: Number(row.tax),
     total: Number(row.total), amountPaid: Number(row.amount_paid), notes: row.notes, createdAt: row.created_at,
   };
 }
@@ -112,8 +115,8 @@ app.patch('/api/invoices/:id', validate('param', uuidParam), validate('json', up
     .update({
       customer_id: b.customerId, customer_name: b.customerName, invoice_number: b.invoiceNumber,
       status: b.status, issue_date: b.issueDate, due_date: b.dueDate, subtotal: b.subtotal,
-      discount: b.discount ?? 0, tax: b.tax,
-      total: b.subtotal - (b.discount ?? 0) + b.tax, notes: b.notes || null, updated_at: new Date().toISOString(),
+      discount: b.discount ?? 0, charges: b.charges ?? 0, tax: b.tax,
+      total: b.subtotal - (b.discount ?? 0) + (b.charges ?? 0) + b.tax, notes: b.notes || null, updated_at: new Date().toISOString(),
     })
     .eq('id', c.req.valid('param').id)
     .select(INVOICE_SELECT)
@@ -186,7 +189,7 @@ app.get('/api/invoices/:id/print', validate('param', uuidParam), async (c) => {
     .from('invoices')
     .select(
       `${INVOICE_SELECT}, organizations(name), ` +
-      `orders(order_items(item_name, quantity, unit_price, line_total), order_tickets(token_number)), ` +
+      `orders(order_items(item_name, quantity, unit_price, line_total), order_tickets(token_number), order_charges(charge_name, amount)), ` +
       `bookings(service_name), ` +
       `payments(amount, method, paid_at, notes)`
     )
@@ -222,6 +225,9 @@ app.get('/api/invoices/:id/print', validate('param', uuidParam), async (c) => {
     organizationName: row.organizations?.name ?? '',
     tokenNumber,
     lineItems,
+    charges: (row.orders?.order_charges ?? []).map((ch: any) => ({
+      name: ch.charge_name, amount: Number(ch.amount),
+    })),
     payments: (row.payments ?? []).map((p: any) => ({
       amount: Number(p.amount), method: p.method, paidAt: p.paid_at, notes: p.notes,
     })),

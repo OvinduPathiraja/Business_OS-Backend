@@ -46,6 +46,9 @@ export const quotationTemplateSchema = z.object({
       rows: z.object({
         subtotal: z.boolean(),
         discount: z.boolean(),
+        // Optional: templates saved before extra charges existed lack this
+        // key; renderers treat missing as ON (rows auto-hide at zero anyway).
+        charges: z.boolean().optional(),
         tax: z.boolean(),
       }),
     }),

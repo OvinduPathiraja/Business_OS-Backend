@@ -48,6 +48,12 @@ const appliedPromotionSchema = z.object({
   amount: z.number().min(0),
 });
 
+const appliedChargeSchema = z.object({
+  chargeTypeId: z.string().uuid().nullable(),
+  name: z.string().trim().min(1),
+  amount: z.number().min(0),
+});
+
 const convertBody = z.object({
   customerId: z.string().uuid().nullable(),
   customerName: z.string().trim().min(1),
@@ -60,6 +66,7 @@ const convertBody = z.object({
   branchId: z.string().uuid().optional().nullable(),
   promotions: z.array(appliedPromotionSchema).optional(),
   cardTypeId: z.string().uuid().optional().nullable(),
+  charges: z.array(appliedChargeSchema).optional(),
 });
 
 const BOOKING_SELECT = 'id, organization_id, customer_id, customer_name, service_id, service_name, booking_type, booking_date, start_hour, end_hour, status, notes, created_at';
@@ -198,6 +205,7 @@ app.post('/api/bookings/:id/convert', validate('param', uuidParam), validate('js
     p_discount: b.discount ?? 0,
     p_promotions: b.promotions ?? [],
     p_card_type_id: b.cardTypeId || null,
+    p_charges: b.charges ?? [],
   });
   if (error) return sendPgError(c, error);
   return c.json({ orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber, branchId: data.branchId, tokenNumber: data.tokenNumber ?? null }, 201);
