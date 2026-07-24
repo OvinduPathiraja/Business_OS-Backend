@@ -23,7 +23,7 @@ const statusBody = z.object({ status: z.enum(['pending', 'in_progress', 'done'])
 // into orders/services, so accounts whose role has ONLY tasks.view still get
 // complete cards (orders.view would be denied by RLS on a join).
 const SELECT =
-  'id, order_id, order_item_id, service_name, customer_name, name, description, department_id, sort_order, status, started_at, completed_at, created_at';
+  'id, order_id, order_item_id, service_name, customer_name, name, description, department_id, assigned_employee_id, sort_order, status, started_at, completed_at, created_at';
 
 function fromRow(row: any) {
   return {
@@ -35,6 +35,7 @@ function fromRow(row: any) {
     name: row.name,
     description: row.description,
     departmentId: row.department_id,
+    assignedEmployeeId: row.assigned_employee_id,
     sortOrder: row.sort_order,
     status: row.status,
     startedAt: row.started_at,

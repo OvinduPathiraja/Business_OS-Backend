@@ -6,7 +6,10 @@ import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
 
-const UNITS = ['each', 'kg', 'g', 'l', 'ml', 'm', 'cm', 'box', 'pack', 'dozen', 'pair', 'hour', 'set', 'roll'] as const;
+// Mirrors frontend/src/lib/inventory.ts's UNITS — weight, liquid, and count
+// only (no distance/time units); weight and liquid each cover both metric
+// and US customary. See supabase/migrations/20260724020000_inventory_units_weight_liquid_count.sql.
+const UNITS = ['kg', 'g', 'lb', 'oz', 'l', 'ml', 'gal', 'fl_oz', 'each', 'box', 'pack', 'dozen', 'pair', 'set', 'roll'] as const;
 
 const categoryBody = z.object({ name: z.string().trim().min(1) });
 
@@ -168,7 +171,7 @@ app.get('/api/inventory/variants', async (c) => {
 
   const { data, error } = await auth.client
     .from('product_variants')
-    .select('id, name, sku, barcode, unit_price, inventory_item_id, inventory_items(name), inventory_stock(branch_id, quantity_on_hand)')
+    .select('id, name, sku, barcode, unit_price, inventory_item_id, inventory_items(name, unit), inventory_stock(branch_id, quantity_on_hand)')
     .eq('status', 'active')
     .order('name', { ascending: true });
   if (error) return sendPgError(c, error);
@@ -183,6 +186,7 @@ app.get('/api/inventory/variants', async (c) => {
       sku: row.sku,
       barcode: row.barcode,
       unitPrice: Number(row.unit_price),
+      unit: item?.unit ?? 'each',
       stockByBranch: stock.map((s: any) => ({ branchId: s.branch_id, quantityOnHand: Number(s.quantity_on_hand) })),
     };
   }));

@@ -3,6 +3,7 @@ import { cors } from 'hono/cors';
 import type { Bindings } from './lib/supabase.js';
 import { bearerTokenFrom } from './lib/supabase.js';
 import healthRoutes from './routes/health.js';
+import authRoutes from './routes/auth.js';
 import meRoutes from './routes/me.js';
 import organizationsRoutes from './routes/organizations.js';
 import customersRoutes from './routes/customers.js';
@@ -75,6 +76,7 @@ export function buildApp() {
   });
 
   app.route('/', healthRoutes);
+  app.route('/', authRoutes);
   app.route('/', meRoutes);
   app.route('/', organizationsRoutes);
   app.route('/', customersRoutes);

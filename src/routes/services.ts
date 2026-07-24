@@ -125,11 +125,12 @@ const serviceTasksBody = z.object({
       name: z.string().trim().min(1),
       description: z.string().optional().nullable(),
       departmentId: z.string().uuid().optional().nullable(),
+      assignedEmployeeId: z.string().uuid().optional().nullable(),
     })
   ),
 });
 
-const TASK_SELECT = 'id, service_id, department_id, name, description, sort_order';
+const TASK_SELECT = 'id, service_id, department_id, assigned_employee_id, name, description, sort_order';
 
 app.get('/api/services/:id/tasks', validate('param', uuidParam), async (c) => {
   const auth = await requireOrg(c);
@@ -146,6 +147,7 @@ app.get('/api/services/:id/tasks', validate('param', uuidParam), async (c) => {
       id: row.id,
       serviceId: row.service_id,
       departmentId: row.department_id,
+      assignedEmployeeId: row.assigned_employee_id,
       name: row.name,
       description: row.description,
       sortOrder: row.sort_order,
@@ -166,6 +168,7 @@ app.put('/api/services/:id/tasks', validate('param', uuidParam), validate('json'
       name: t.name,
       description: t.description || null,
       departmentId: t.departmentId || null,
+      assignedEmployeeId: t.assignedEmployeeId || null,
     })),
   });
   if (error) return sendPgError(c, error);

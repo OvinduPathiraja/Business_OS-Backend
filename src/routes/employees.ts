@@ -17,6 +17,39 @@ const inviteBody = z.object({
   branchIds: z.array(z.string().uuid()).optional(),
 });
 
+// Synthetic email domain for username-only accounts (see
+// supabase/migrations/20260724010000_username_accounts.sql) — Supabase Auth
+// has no username-only mode, so this is what actually lands in auth.users;
+// profiles.username is the real, user-facing identity. Never shown to the
+// admin or the created user.
+const USERNAME_EMAIL_DOMAIN = 'users.businessos.internal';
+const USERNAME_RE = /^[a-zA-Z0-9._-]+$/;
+
+const usernameInviteBody = z.object({
+  fullName: z.string().trim().min(1),
+  username: z.string().trim().min(3).max(32).regex(USERNAME_RE, 'Usernames can only contain letters, numbers, dots, hyphens, and underscores.'),
+  password: z.string().min(8),
+  phone: z.string().optional().nullable(),
+  department: z.string().optional().nullable(),
+  roleId: z.string().uuid(),
+  branchIds: z.array(z.string().uuid()).optional(),
+});
+
+// Mirrors frontend/src/lib/passwordPolicy.ts — duplicated rather than
+// shared since the frontend and backend are separate packages here, but
+// kept in sync deliberately; this endpoint is the one place a password
+// reaches the server directly (every other password flow goes straight from
+// client to Supabase Auth).
+function passwordIssues(password: string): string[] {
+  const issues: string[] = [];
+  if (password.length < 8) issues.push('at least 8 characters');
+  if (!/[A-Z]/.test(password)) issues.push('an uppercase letter');
+  if (!/[a-z]/.test(password)) issues.push('a lowercase letter');
+  if (!/[0-9]/.test(password)) issues.push('a number');
+  if (!/[^A-Za-z0-9]/.test(password)) issues.push('a special character');
+  return issues;
+}
+
 const updateBody = z.object({
   phone: z.string().optional().nullable(),
   department: z.string().optional().nullable(),
@@ -32,7 +65,7 @@ const updateBody = z.object({
 // organization_members, not profiles — profiles!user_id disambiguates the
 // embed since organization_members has two FKs into profiles (user_id and
 // invited_by).
-const MEMBER_SELECT = 'user_id, phone, department, department_id, role_id, status, created_at, roles(name), departments(name), profiles!user_id(full_name, email)';
+const MEMBER_SELECT = 'user_id, phone, department, department_id, role_id, status, created_at, roles(name), departments(name), profiles!user_id(full_name, email, username)';
 const INVITE_SELECT = 'id, full_name, email, phone, department, role_id, status, invited_at, roles(name)';
 
 function roleNameFrom(row: any) {
@@ -41,7 +74,10 @@ function roleNameFrom(row: any) {
 }
 
 function profileFrom(row: any) {
-  const p = row.profiles as { full_name: string; email: string } | { full_name: string; email: string }[] | null;
+  const p = row.profiles as
+    | { full_name: string; email: string; username: string | null }
+    | { full_name: string; email: string; username: string | null }[]
+    | null;
   return Array.isArray(p) ? p[0] : p;
 }
 
@@ -57,7 +93,12 @@ function memberFromRow(row: any, branchIds: string[]) {
   const dept = row.departments as { name: string } | { name: string }[] | null;
   const deptName = Array.isArray(dept) ? dept[0]?.name ?? null : dept?.name ?? null;
   return {
-    id: row.user_id, kind: 'member', fullName: profile?.full_name ?? '(no name)', email: profile?.email ?? null,
+    id: row.user_id, kind: 'member', fullName: profile?.full_name ?? '(no name)',
+    // Username accounts have no real email — their auth.users row carries a
+    // synthetic one (see 20260724010000_username_accounts.sql) that's an
+    // implementation detail, never shown.
+    email: profile?.username ? null : profile?.email ?? null,
+    username: profile?.username ?? null,
     phone: row.phone, department: deptName ?? row.department, departmentId: row.department_id ?? null,
     roleId: row.role_id, roleName: roleNameFrom(row),
     status: row.status, createdAt: row.created_at, branchIds,
@@ -65,7 +106,7 @@ function memberFromRow(row: any, branchIds: string[]) {
 }
 function inviteFromRow(row: any, branchIds: string[]) {
   return {
-    id: row.id, kind: 'invited', fullName: row.full_name, email: row.email,
+    id: row.id, kind: 'invited', fullName: row.full_name, email: row.email, username: null,
     phone: row.phone, department: row.department, roleId: row.role_id, roleName: roleNameFrom(row),
     status: 'invited', createdAt: row.invited_at, branchIds,
   };
@@ -249,6 +290,99 @@ app.post('/api/employees/invites', validate('json', inviteBody), async (c) => {
       alreadyRegistered ? 409 : rateLimited ? 429 : 500
     );
   }
+
+  return c.json({ path: 'new_account' }, 201);
+});
+
+// Creates a fully active member immediately — no invite email, no
+// confirmation step, matching the QA ask that this be the "easier" path.
+// Reuses the exact same employee_invites -> handle_new_user() handoff the
+// email path already relies on to seed role/department/branches onto
+// organization_members, then (since there's no email link for the user to
+// click and accept) promotes that row from 'invited' straight to 'active'
+// itself, using the service client the same way the invite path already
+// does for admin.createUser.
+app.post('/api/employees/username-invite', validate('json', usernameInviteBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const b = c.req.valid('json');
+  const issues = passwordIssues(b.password);
+  if (issues.length > 0) {
+    return c.json({ error: `Password needs ${issues.join(', ')}.` }, 400);
+  }
+
+  const username = b.username.toLowerCase();
+  const svc = createServiceClient(c.env);
+
+  const { data: existingUsername, error: usernameLookupError } = await svc
+    .from('profiles')
+    .select('id')
+    .ilike('username', username)
+    .maybeSingle();
+  if (usernameLookupError) return sendPgError(c, usernameLookupError);
+  if (existingUsername) {
+    return c.json({ error: 'That username is already taken.', code: 'USERNAME_TAKEN' }, 409);
+  }
+
+  const syntheticEmail = `${username}@${USERNAME_EMAIL_DOMAIN}`;
+
+  const { data: invite, error } = await auth.client
+    .from('employee_invites')
+    .insert({
+      organization_id: auth.organizationId,
+      invited_by: auth.userId,
+      full_name: b.fullName,
+      email: syntheticEmail,
+      phone: b.phone || null,
+      department: b.department || null,
+      role_id: b.roleId,
+    })
+    .select('id')
+    .single();
+  if (error) return sendPgError(c, error);
+
+  if (b.branchIds && b.branchIds.length > 0) {
+    const { error: branchError } = await auth.client
+      .from('employee_invite_branches')
+      .insert(b.branchIds.map((branchId) => ({ invite_id: invite.id, branch_id: branchId })));
+    if (branchError) {
+      await auth.client.from('employee_invites').delete().eq('id', invite.id);
+      return sendPgError(c, branchError);
+    }
+  }
+
+  const { data: created, error: createError } = await svc.auth.admin.createUser({
+    email: syntheticEmail,
+    password: b.password,
+    email_confirm: true,
+    user_metadata: { full_name: b.fullName },
+  });
+  if (createError || !created.user) {
+    await auth.client.from('employee_invites').delete().eq('id', invite.id);
+    return c.json({ error: createError?.message ?? 'Failed to create the account.' }, 500);
+  }
+
+  // handle_new_user() (the auth.users insert trigger) just ran synchronously
+  // as part of createUser() above — it already turned the employee_invites
+  // row into an organization_members row with status 'invited' and copied
+  // role/department/branches across. Finish what accept_organization_invite()
+  // would normally do once the user clicks their (nonexistent, here) invite
+  // link — direct service-role writes, since that RPC is keyed to auth.uid()
+  // and there's no session to act as this brand-new user with.
+  const { error: activateError } = await svc
+    .from('organization_members')
+    .update({ status: 'active', joined_at: new Date().toISOString() })
+    .eq('organization_id', auth.organizationId)
+    .eq('user_id', created.user.id)
+    .eq('status', 'invited');
+  if (activateError) return sendPgError(c, activateError);
+
+  const { error: profileError } = await svc
+    .from('profiles')
+    .update({ username, last_active_organization_id: auth.organizationId })
+    .eq('id', created.user.id);
+  if (profileError) return sendPgError(c, profileError);
 
   return c.json({ path: 'new_account' }, 201);
 });
