@@ -6,11 +6,15 @@ import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
 
-const PO_STATUSES = ['draft', 'ordered', 'received', 'cancelled'] as const;
+const PO_STATUSES = ['draft', 'ordered', 'partially_received', 'received', 'cancelled'] as const;
 // A plain client PATCH can only ever move a purchase order between these
-// three — 'received' is deliberately excluded here (matching the DB's own
-// RLS `with check`) since it only ever happens through /receive.
+// three — 'partially_received'/'received' are deliberately excluded here
+// (matching the DB's own RLS `with check`) since they only ever happen
+// through /receive.
 const CLIENT_SETTABLE_STATUSES = ['draft', 'ordered', 'cancelled'] as const;
+// The status a purchase order can be created directly into — same two, but
+// expressed separately since "cancelled" is never a valid starting point.
+const CREATE_STATUSES = ['draft', 'ordered'] as const;
 const PAYMENT_METHODS = ['card', 'cash', 'bank_transfer', 'wallet'] as const;
 
 // A purchase order line may reference a product (variantId, increases stock
@@ -39,9 +43,19 @@ const saveBody = z.object({
   items: z.array(lineItemSchema).min(1),
   notes: z.string().optional().nullable(),
   branchId: z.string().uuid().optional().nullable(),
+  paymentTerms: z.string().trim().max(120).optional().nullable(),
+});
+
+const createBody = saveBody.extend({
+  status: z.enum(CREATE_STATUSES).optional(),
 });
 
 const statusBody = z.object({ status: z.enum(CLIENT_SETTABLE_STATUSES) });
+
+const receiveItemSchema = z.object({
+  itemId: z.string().uuid(),
+  quantityReceived: z.number().min(0),
+});
 
 const receiveBody = z.object({
   branchId: z.string().uuid().optional().nullable(),
@@ -49,13 +63,17 @@ const receiveBody = z.object({
   paymentMethod: z.enum(PAYMENT_METHODS).optional().nullable(),
   bankAccountId: z.string().uuid().optional().nullable(),
   cashRegisterId: z.string().uuid().optional().nullable(),
+  // Per-line received quantity for this receiving event — a line left out
+  // (or the whole array omitted) defaults to "receive what's left on it",
+  // so a full one-shot receive needs nothing here.
+  items: z.array(receiveItemSchema).optional(),
 }).refine((b) => !(b.paymentAmount > 0 && !b.paymentMethod), {
   message: 'A payment method is required when recording a payment.',
   path: ['paymentMethod'],
 });
 
-const PO_SELECT = 'id, organization_id, supplier_id, supplier_name, po_number, status, order_date, expected_date, branch_id, subtotal, discount, tax, total, notes, bill_id, received_at, created_at, purchase_order_items(count)';
-const PO_DETAIL_SELECT = 'id, organization_id, supplier_id, supplier_name, po_number, status, order_date, expected_date, branch_id, subtotal, discount, tax, total, notes, bill_id, received_at, created_at, purchase_order_items(id, service_id, variant_id, item_name, quantity, unit_cost, line_total)';
+const PO_SELECT = 'id, organization_id, supplier_id, supplier_name, po_number, status, order_date, expected_date, branch_id, subtotal, discount, tax, total, notes, bill_id, received_at, payment_terms, created_at, purchase_order_items(count)';
+const PO_DETAIL_SELECT = 'id, organization_id, supplier_id, supplier_name, po_number, status, order_date, expected_date, branch_id, subtotal, discount, tax, total, notes, bill_id, received_at, payment_terms, created_at, purchase_order_items(id, service_id, variant_id, item_name, quantity, unit_cost, quantity_received, line_total)';
 
 function poFromRow(row: any) {
   const itemCountRow = Array.isArray(row.purchase_order_items) ? row.purchase_order_items[0] : row.purchase_order_items;
@@ -64,6 +82,7 @@ function poFromRow(row: any) {
     poNumber: row.po_number, status: row.status, orderDate: row.order_date, expectedDate: row.expected_date,
     branchId: row.branch_id, subtotal: Number(row.subtotal), discount: Number(row.discount ?? 0), tax: Number(row.tax),
     total: Number(row.total), notes: row.notes, billId: row.bill_id, receivedAt: row.received_at,
+    paymentTerms: row.payment_terms ?? null,
     itemCount: Number(itemCountRow?.count ?? 0), createdAt: row.created_at,
   };
 }
@@ -75,10 +94,12 @@ function poWithItemsFromRow(row: any) {
     poNumber: row.po_number, status: row.status, orderDate: row.order_date, expectedDate: row.expected_date,
     branchId: row.branch_id, subtotal: Number(row.subtotal), discount: Number(row.discount ?? 0), tax: Number(row.tax),
     total: Number(row.total), notes: row.notes, billId: row.bill_id, receivedAt: row.received_at,
+    paymentTerms: row.payment_terms ?? null,
     itemCount: items.length, createdAt: row.created_at,
     items: items.map((it) => ({
       id: it.id, serviceId: it.service_id, variantId: it.variant_id, itemName: it.item_name,
-      quantity: Number(it.quantity), unitCost: Number(it.unit_cost), lineTotal: Number(it.line_total),
+      quantity: Number(it.quantity), unitCost: Number(it.unit_cost), quantityReceived: Number(it.quantity_received ?? 0),
+      lineTotal: Number(it.line_total),
     })),
   };
 }
@@ -112,7 +133,7 @@ app.get('/api/purchase-orders/:id', validate('param', uuidParam), async (c) => {
 // Wraps create_purchase_order() — atomic header + items insert, so an
 // editable multi-item document never risks an orphaned header row from a
 // partial client-side sequence.
-app.post('/api/purchase-orders', validate('json', saveBody), async (c) => {
+app.post('/api/purchase-orders', validate('json', createBody), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
@@ -128,6 +149,8 @@ app.post('/api/purchase-orders', validate('json', saveBody), async (c) => {
     p_expected_date: b.expectedDate || null,
     p_branch_id: b.branchId || null,
     p_discount: b.discount ?? 0,
+    p_status: b.status ?? 'draft',
+    p_payment_terms: b.paymentTerms || null,
   });
   if (error) return sendPgError(c, error);
   return c.json({ purchaseOrderId: data.purchaseOrderId, poNumber: data.poNumber }, 201);
@@ -150,6 +173,7 @@ app.patch('/api/purchase-orders/:id', validate('param', uuidParam), validate('js
     p_expected_date: b.expectedDate || null,
     p_branch_id: b.branchId || null,
     p_discount: b.discount ?? 0,
+    p_payment_terms: b.paymentTerms || null,
   });
   if (error) return sendPgError(c, error);
   return c.body(null, 204);
@@ -197,9 +221,10 @@ app.post('/api/purchase-orders/:id/receive', validate('param', uuidParam), valid
     p_payment_method: b.paymentMethod || null,
     p_bank_account_id: b.bankAccountId || null,
     p_cash_register_id: b.cashRegisterId || null,
+    p_items: b.items && b.items.length > 0 ? b.items.map((it) => ({ itemId: it.itemId, quantityReceived: it.quantityReceived })) : null,
   });
   if (error) return sendPgError(c, error);
-  return c.json({ billId: data.billId, billNumber: data.billNumber, purchaseOrderId: data.purchaseOrderId, branchId: data.branchId }, 201);
+  return c.json({ billId: data.billId, billNumber: data.billNumber, purchaseOrderId: data.purchaseOrderId, branchId: data.branchId, status: data.status }, 201);
 });
 
 export default app;
