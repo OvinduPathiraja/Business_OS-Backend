@@ -49,11 +49,19 @@ const stockBody = z.object({
   reorderPoint: z.number(),
 });
 
+const addStockBody = z.object({
+  branchId: z.string().uuid(),
+  quantity: z.number().positive(),
+  purchasePrice: z.number().min(0),
+  sellingPrice: z.number().min(0),
+});
+
 const ITEM_SELECT =
   'id, organization_id, category_id, name, unit, notes, quantity_on_hand, reorder_point, created_at, updated_at, ' +
   'inventory_categories(name), ' +
   'product_variants(id, name, sku, barcode, unit_cost, unit_price, is_default, status, ' +
-  'inventory_stock(branch_id, quantity_on_hand, reorder_point, branches(name)))';
+  'inventory_stock(branch_id, quantity_on_hand, reorder_point, branches(name)), ' +
+  'inventory_batches(id, branch_id, purchase_price, selling_price, quantity_received, quantity_remaining, source, received_at))';
 
 function stockFromRow(row: any) {
   const branch = Array.isArray(row.branches) ? row.branches[0] : row.branches;
@@ -65,8 +73,22 @@ function stockFromRow(row: any) {
   };
 }
 
+function batchFromRow(row: any) {
+  return {
+    id: row.id,
+    branchId: row.branch_id,
+    purchasePrice: Number(row.purchase_price),
+    sellingPrice: Number(row.selling_price),
+    quantityReceived: Number(row.quantity_received),
+    quantityRemaining: Number(row.quantity_remaining),
+    source: row.source,
+    receivedAt: row.received_at,
+  };
+}
+
 function variantFromRow(row: any) {
   const stock = Array.isArray(row.inventory_stock) ? row.inventory_stock : [];
+  const batches = Array.isArray(row.inventory_batches) ? row.inventory_batches : [];
   return {
     id: row.id,
     name: row.name,
@@ -77,6 +99,7 @@ function variantFromRow(row: any) {
     isDefault: row.is_default,
     status: row.status,
     stockByBranch: stock.map(stockFromRow),
+    batches: batches.map(batchFromRow),
   };
 }
 
@@ -164,20 +187,23 @@ app.get('/api/inventory/items', validate('query', itemListQuery), async (c) => {
 });
 
 // Lean, flat payload for the New Order product picker — every active
-// variant with its price and per-branch stock, no item-level nesting.
+// variant with its price, per-branch stock, and open price/date lots
+// (quantity_remaining > 0 only — sold-out lots are dead weight here), no
+// item-level nesting.
 app.get('/api/inventory/variants', async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
   const { data, error } = await auth.client
     .from('product_variants')
-    .select('id, name, sku, barcode, unit_price, inventory_item_id, inventory_items(name, unit), inventory_stock(branch_id, quantity_on_hand)')
+    .select('id, name, sku, barcode, unit_price, inventory_item_id, inventory_items(name, unit), inventory_stock(branch_id, quantity_on_hand), inventory_batches(id, branch_id, purchase_price, selling_price, quantity_remaining, received_at)')
     .eq('status', 'active')
     .order('name', { ascending: true });
   if (error) return sendPgError(c, error);
   return c.json((data ?? []).map((row: any) => {
     const item = Array.isArray(row.inventory_items) ? row.inventory_items[0] : row.inventory_items;
     const stock = Array.isArray(row.inventory_stock) ? row.inventory_stock : [];
+    const batches = Array.isArray(row.inventory_batches) ? row.inventory_batches : [];
     return {
       id: row.id,
       itemId: row.inventory_item_id,
@@ -188,8 +214,42 @@ app.get('/api/inventory/variants', async (c) => {
       unitPrice: Number(row.unit_price),
       unit: item?.unit ?? 'each',
       stockByBranch: stock.map((s: any) => ({ branchId: s.branch_id, quantityOnHand: Number(s.quantity_on_hand) })),
+      batches: batches
+        .filter((b: any) => Number(b.quantity_remaining) > 0)
+        .map((b: any) => ({
+          id: b.id, branchId: b.branch_id, purchasePrice: Number(b.purchase_price), sellingPrice: Number(b.selling_price),
+          quantityRemaining: Number(b.quantity_remaining), receivedAt: b.received_at,
+        }))
+        .sort((a: any, b: any) => a.receivedAt.localeCompare(b.receivedAt)),
     };
   }));
+});
+
+// Records an inventory addition — a manual restock outside of a purchase
+// order, distinct from create_product_item()'s initial-stock seeding.
+// Creates (or folds into) a price/date lot via add_inventory_stock(), which
+// also advances the variant's current cost/price to whatever was entered.
+app.post('/api/inventory/variants/:variantId/batches', validate('param', z.object({ variantId: z.string().uuid() })), validate('json', addStockBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const b = c.req.valid('json');
+  const { data, error } = await auth.client.rpc('add_inventory_stock', {
+    p_variant_id: c.req.valid('param').variantId,
+    p_branch_id: b.branchId,
+    p_quantity: b.quantity,
+    p_purchase_price: b.purchasePrice,
+    p_selling_price: b.sellingPrice,
+  });
+  if (error) return sendPgError(c, error);
+
+  const { data: row, error: fetchError } = await auth.client
+    .from('product_variants')
+    .select('id, name, sku, barcode, unit_cost, unit_price, is_default, status, inventory_stock(branch_id, quantity_on_hand, reorder_point, branches(name)), inventory_batches(id, branch_id, purchase_price, selling_price, quantity_received, quantity_remaining, source, received_at)')
+    .eq('id', c.req.valid('param').variantId)
+    .single();
+  if (fetchError) return sendPgError(c, fetchError);
+  return c.json({ batchId: data.batchId, variant: variantFromRow(row) }, 201);
 });
 
 app.post('/api/inventory/items', validate('json', createItemBody), async (c) => {

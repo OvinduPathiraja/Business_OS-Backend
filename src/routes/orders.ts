@@ -22,6 +22,10 @@ const updateBody = z.object({
 const lineItemSchema = z.object({
   serviceId: z.string().uuid().optional(),
   variantId: z.string().uuid().optional(),
+  // Which price/date lot this line was fulfilled from — set when the
+  // cashier picked a specific one (or there was only one to pick), left
+  // unset when the product had no lot history yet. See inventory_batches.
+  batchId: z.string().uuid().optional(),
   name: z.string(),
   quantity: z.number().positive(),
   unitPrice: z.number().min(0),
@@ -64,7 +68,7 @@ const completeOrderBody = z.object({
 });
 
 const ORDER_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, discount, charges, tax, total, notes, booking_id, branch_id, created_at, order_items(count)';
-const ORDER_DETAIL_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, discount, charges, tax, total, notes, booking_id, branch_id, created_at, order_items(id, service_id, variant_id, item_name, quantity, unit_price, line_total), order_promotions(id, promotion_name, reward_type, amount), order_charges(id, charge_name, amount)';
+const ORDER_DETAIL_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, discount, charges, tax, total, notes, booking_id, branch_id, created_at, order_items(id, service_id, variant_id, batch_id, item_name, quantity, unit_price, line_total), order_promotions(id, promotion_name, reward_type, amount), order_charges(id, charge_name, amount)';
 
 function orderFromRow(row: any) {
   const itemCountRow = Array.isArray(row.order_items) ? row.order_items[0] : row.order_items;
@@ -84,7 +88,7 @@ function orderWithItemsFromRow(row: any) {
     status: row.status, subtotal: Number(row.subtotal), discount: Number(row.discount ?? 0), charges: Number(row.charges ?? 0), tax: Number(row.tax), total: Number(row.total),
     notes: row.notes, bookingId: row.booking_id, branchId: row.branch_id, itemCount: items.length, createdAt: row.created_at,
     items: items.map((it) => ({
-      id: it.id, serviceId: it.service_id, variantId: it.variant_id, itemName: it.item_name,
+      id: it.id, serviceId: it.service_id, variantId: it.variant_id, batchId: it.batch_id, itemName: it.item_name,
       quantity: Number(it.quantity), unitPrice: Number(it.unit_price), lineTotal: Number(it.line_total),
     })),
     promotions: promotions.map((p) => ({
@@ -190,7 +194,7 @@ app.post('/api/orders', validate('json', completeOrderBody), async (c) => {
     p_subtotal: b.subtotal,
     p_tax: b.tax,
     p_total: b.total,
-    p_items: b.items.map((it) => ({ serviceId: it.serviceId ?? null, variantId: it.variantId ?? null, name: it.name, quantity: it.quantity, unitPrice: it.unitPrice })),
+    p_items: b.items.map((it) => ({ serviceId: it.serviceId ?? null, variantId: it.variantId ?? null, batchId: it.batchId ?? null, name: it.name, quantity: it.quantity, unitPrice: it.unitPrice })),
     p_notes: notes,
     p_payment_method: b.paymentMethod,
     p_branch_id: b.branchId || null,

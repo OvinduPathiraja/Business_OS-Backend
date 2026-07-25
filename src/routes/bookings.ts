@@ -34,6 +34,7 @@ const bulkIdsBody = z.object({ ids: z.array(z.string().uuid()).min(1) });
 const lineItemSchema = z.object({
   serviceId: z.string().uuid().optional(),
   variantId: z.string().uuid().optional(),
+  batchId: z.string().uuid().optional(),
   name: z.string(),
   quantity: z.number().positive(),
   unitPrice: z.number().min(0),
@@ -198,7 +199,7 @@ app.post('/api/bookings/:id/convert', validate('param', uuidParam), validate('js
     p_subtotal: b.subtotal,
     p_tax: b.tax,
     p_total: b.total,
-    p_items: b.items.map((it) => ({ serviceId: it.serviceId ?? null, variantId: it.variantId ?? null, name: it.name, quantity: it.quantity, unitPrice: it.unitPrice })),
+    p_items: b.items.map((it) => ({ serviceId: it.serviceId ?? null, variantId: it.variantId ?? null, batchId: it.batchId ?? null, name: it.name, quantity: it.quantity, unitPrice: it.unitPrice })),
     p_notes: notes,
     p_payment_method: b.paymentMethod,
     p_branch_id: b.branchId || null,
