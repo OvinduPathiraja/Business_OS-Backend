@@ -56,12 +56,15 @@ const addStockBody = z.object({
   sellingPrice: z.number().min(0),
 });
 
+const BATCH_SELECT =
+  'inventory_batches(id, branch_id, purchase_price, selling_price, quantity_received, quantity_remaining, source, received_at, purchase_order_id, purchase_orders(po_number))';
+
 const ITEM_SELECT =
   'id, organization_id, category_id, name, unit, notes, quantity_on_hand, reorder_point, created_at, updated_at, ' +
   'inventory_categories(name), ' +
   'product_variants(id, name, sku, barcode, unit_cost, unit_price, is_default, status, ' +
   'inventory_stock(branch_id, quantity_on_hand, reorder_point, branches(name)), ' +
-  'inventory_batches(id, branch_id, purchase_price, selling_price, quantity_received, quantity_remaining, source, received_at))';
+  `${BATCH_SELECT})`;
 
 function stockFromRow(row: any) {
   const branch = Array.isArray(row.branches) ? row.branches[0] : row.branches;
@@ -74,6 +77,7 @@ function stockFromRow(row: any) {
 }
 
 function batchFromRow(row: any) {
+  const po = Array.isArray(row.purchase_orders) ? row.purchase_orders[0] : row.purchase_orders;
   return {
     id: row.id,
     branchId: row.branch_id,
@@ -83,6 +87,8 @@ function batchFromRow(row: any) {
     quantityRemaining: Number(row.quantity_remaining),
     source: row.source,
     receivedAt: row.received_at,
+    purchaseOrderId: row.purchase_order_id,
+    poNumber: po?.po_number ?? null,
   };
 }
 
@@ -245,7 +251,7 @@ app.post('/api/inventory/variants/:variantId/batches', validate('param', z.objec
 
   const { data: row, error: fetchError } = await auth.client
     .from('product_variants')
-    .select('id, name, sku, barcode, unit_cost, unit_price, is_default, status, inventory_stock(branch_id, quantity_on_hand, reorder_point, branches(name)), inventory_batches(id, branch_id, purchase_price, selling_price, quantity_received, quantity_remaining, source, received_at)')
+    .select(`id, name, sku, barcode, unit_cost, unit_price, is_default, status, inventory_stock(branch_id, quantity_on_hand, reorder_point, branches(name)), ${BATCH_SELECT}`)
     .eq('id', c.req.valid('param').variantId)
     .single();
   if (fetchError) return sendPgError(c, fetchError);
