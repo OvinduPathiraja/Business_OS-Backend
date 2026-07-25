@@ -5,6 +5,7 @@ import { requireUser, requireOrg } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
+import { purchaseOrderTemplateSchema } from '../lib/purchaseOrderTemplateSchema.js';
 
 const PO_STATUSES = ['draft', 'ordered', 'partially_received', 'received', 'cancelled'] as const;
 // A plain client PATCH can only ever move a purchase order between these
@@ -16,6 +17,7 @@ const CLIENT_SETTABLE_STATUSES = ['draft', 'ordered', 'cancelled'] as const;
 // expressed separately since "cancelled" is never a valid starting point.
 const CREATE_STATUSES = ['draft', 'ordered'] as const;
 const PAYMENT_METHODS = ['card', 'cash', 'bank_transfer', 'wallet'] as const;
+const PO_PAYMENT_STATUSES = ['unpaid', 'partial', 'paid'] as const;
 
 // A purchase order line may reference a product (variantId, increases stock
 // on receipt) or a subcontracted service (serviceId, payable-only) — never
@@ -44,6 +46,8 @@ const saveBody = z.object({
   notes: z.string().optional().nullable(),
   branchId: z.string().uuid().optional().nullable(),
   paymentTerms: z.string().trim().max(120).optional().nullable(),
+  paymentStatus: z.enum(PO_PAYMENT_STATUSES).optional(),
+  expectedPaymentAmount: z.number().min(0).optional(),
 });
 
 const createBody = saveBody.extend({
@@ -72,8 +76,34 @@ const receiveBody = z.object({
   path: ['paymentMethod'],
 });
 
-const PO_SELECT = 'id, organization_id, supplier_id, supplier_name, po_number, status, order_date, expected_date, branch_id, subtotal, discount, tax, total, notes, bill_id, received_at, payment_terms, created_at, purchase_order_items(count)';
-const PO_DETAIL_SELECT = 'id, organization_id, supplier_id, supplier_name, po_number, status, order_date, expected_date, branch_id, subtotal, discount, tax, total, notes, bill_id, received_at, payment_terms, created_at, purchase_order_items(id, service_id, variant_id, item_name, quantity, unit_cost, quantity_received, line_total)';
+const poSettingsBody = z.object({
+  logoUrl: z.string().trim().max(2048).optional().nullable(),
+  address: z.string().trim().max(500).optional().nullable(),
+  phone: z.string().trim().max(50).optional().nullable(),
+  email: z.string().trim().max(255).optional().nullable(),
+  accentColor: z.string().trim().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
+  footerText: z.string().trim().max(1000).optional().nullable(),
+  termsText: z.string().trim().max(2000).optional().nullable(),
+  template: purchaseOrderTemplateSchema.optional().nullable(),
+});
+
+const PO_SETTINGS_SELECT = 'logo_url, address, phone, email, accent_color, footer_text, terms_text, template';
+
+function poSettingsFromRow(row: any) {
+  return {
+    logoUrl: row?.logo_url ?? null,
+    address: row?.address ?? null,
+    phone: row?.phone ?? null,
+    email: row?.email ?? null,
+    accentColor: row?.accent_color ?? '#1A1D23',
+    footerText: row?.footer_text ?? null,
+    termsText: row?.terms_text ?? null,
+    template: row?.template ?? null,
+  };
+}
+
+const PO_SELECT = 'id, organization_id, supplier_id, supplier_name, po_number, status, order_date, expected_date, branch_id, subtotal, discount, tax, total, notes, bill_id, received_at, payment_terms, payment_status, expected_payment_amount, created_at, purchase_order_items(count)';
+const PO_DETAIL_SELECT = 'id, organization_id, supplier_id, supplier_name, po_number, status, order_date, expected_date, branch_id, subtotal, discount, tax, total, notes, bill_id, received_at, payment_terms, payment_status, expected_payment_amount, created_at, purchase_order_items(id, service_id, variant_id, item_name, quantity, unit_cost, quantity_received, line_total)';
 
 function poFromRow(row: any) {
   const itemCountRow = Array.isArray(row.purchase_order_items) ? row.purchase_order_items[0] : row.purchase_order_items;
@@ -83,6 +113,7 @@ function poFromRow(row: any) {
     branchId: row.branch_id, subtotal: Number(row.subtotal), discount: Number(row.discount ?? 0), tax: Number(row.tax),
     total: Number(row.total), notes: row.notes, billId: row.bill_id, receivedAt: row.received_at,
     paymentTerms: row.payment_terms ?? null,
+    paymentStatus: row.payment_status ?? 'unpaid', expectedPaymentAmount: Number(row.expected_payment_amount ?? 0),
     itemCount: Number(itemCountRow?.count ?? 0), createdAt: row.created_at,
   };
 }
@@ -95,6 +126,7 @@ function poWithItemsFromRow(row: any) {
     branchId: row.branch_id, subtotal: Number(row.subtotal), discount: Number(row.discount ?? 0), tax: Number(row.tax),
     total: Number(row.total), notes: row.notes, billId: row.bill_id, receivedAt: row.received_at,
     paymentTerms: row.payment_terms ?? null,
+    paymentStatus: row.payment_status ?? 'unpaid', expectedPaymentAmount: Number(row.expected_payment_amount ?? 0),
     itemCount: items.length, createdAt: row.created_at,
     items: items.map((it) => ({
       id: it.id, serviceId: it.service_id, variantId: it.variant_id, itemName: it.item_name,
@@ -151,6 +183,8 @@ app.post('/api/purchase-orders', validate('json', createBody), async (c) => {
     p_discount: b.discount ?? 0,
     p_status: b.status ?? 'draft',
     p_payment_terms: b.paymentTerms || null,
+    p_payment_status: b.paymentStatus ?? 'unpaid',
+    p_expected_payment_amount: b.expectedPaymentAmount ?? 0,
   });
   if (error) return sendPgError(c, error);
   return c.json({ purchaseOrderId: data.purchaseOrderId, poNumber: data.poNumber }, 201);
@@ -174,6 +208,8 @@ app.patch('/api/purchase-orders/:id', validate('param', uuidParam), validate('js
     p_branch_id: b.branchId || null,
     p_discount: b.discount ?? 0,
     p_payment_terms: b.paymentTerms || null,
+    p_payment_status: b.paymentStatus ?? 'unpaid',
+    p_expected_payment_amount: b.expectedPaymentAmount ?? 0,
   });
   if (error) return sendPgError(c, error);
   return c.body(null, 204);
@@ -225,6 +261,74 @@ app.post('/api/purchase-orders/:id/receive', validate('param', uuidParam), valid
   });
   if (error) return sendPgError(c, error);
   return c.json({ billId: data.billId, billNumber: data.billNumber, purchaseOrderId: data.purchaseOrderId, branchId: data.branchId, status: data.status }, 201);
+});
+
+app.get('/api/organization/purchase-order-settings', async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const { data, error } = await auth.client
+    .from('organization_purchase_order_settings')
+    .select(PO_SETTINGS_SELECT)
+    .eq('organization_id', auth.organizationId)
+    .maybeSingle();
+  if (error) return sendPgError(c, error);
+  return c.json(poSettingsFromRow(data));
+});
+
+app.patch('/api/organization/purchase-order-settings', validate('json', poSettingsBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const b = c.req.valid('json');
+  const { error } = await auth.client.from('organization_purchase_order_settings').upsert(
+    {
+      organization_id: auth.organizationId,
+      ...(b.logoUrl !== undefined ? { logo_url: b.logoUrl || null } : {}),
+      ...(b.address !== undefined ? { address: b.address || null } : {}),
+      ...(b.phone !== undefined ? { phone: b.phone || null } : {}),
+      ...(b.email !== undefined ? { email: b.email || null } : {}),
+      ...(b.accentColor !== undefined ? { accent_color: b.accentColor } : {}),
+      ...(b.footerText !== undefined ? { footer_text: b.footerText || null } : {}),
+      ...(b.termsText !== undefined ? { terms_text: b.termsText || null } : {}),
+      ...(b.template !== undefined ? { template: b.template } : {}),
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'organization_id' }
+  );
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
+// Aggregates everything a printable purchase order needs — org name for the
+// letterhead, the PO's own real line items, and best-effort settings. Same
+// shape as GET /api/quotations/:id/print.
+app.get('/api/purchase-orders/:id/print', validate('param', uuidParam), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const { data, error } = await auth.client
+    .from('purchase_orders')
+    .select(`${PO_DETAIL_SELECT}, organizations(name)`)
+    .eq('id', c.req.valid('param').id)
+    .single();
+  if (error) return sendPgError(c, error);
+
+  const row = data as any;
+  const purchaseOrder = poWithItemsFromRow(row);
+
+  const { data: settingsRow } = await auth.client
+    .from('organization_purchase_order_settings')
+    .select(PO_SETTINGS_SELECT)
+    .eq('organization_id', row.organization_id)
+    .maybeSingle();
+
+  return c.json({
+    purchaseOrder,
+    organizationName: row.organizations?.name ?? '',
+    lineItems: purchaseOrder.items.map((it: any) => ({ name: it.itemName, quantity: it.quantity, unitPrice: it.unitCost, lineTotal: it.lineTotal })),
+    purchaseOrderSettings: poSettingsFromRow(settingsRow),
+  });
 });
 
 export default app;

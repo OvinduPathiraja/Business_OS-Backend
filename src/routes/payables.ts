@@ -6,7 +6,7 @@ import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
 
-const BILL_STATUSES = ['draft', 'pending_approval', 'approved', 'paid', 'void'] as const;
+const BILL_STATUSES = ['draft', 'pending_approval', 'approved', 'partial', 'paid', 'void'] as const;
 const BILL_CATEGORIES = ['procurement', 'salaries', 'utilities', 'maintenance', 'marketing', 'operational', 'other'] as const;
 const PAYMENT_METHODS = ['card', 'cash', 'bank_transfer', 'wallet'] as const;
 
