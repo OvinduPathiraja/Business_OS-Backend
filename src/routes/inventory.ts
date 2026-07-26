@@ -11,19 +11,33 @@ import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
 // and US customary. See supabase/migrations/20260724020000_inventory_units_weight_liquid_count.sql.
 const UNITS = ['kg', 'g', 'lb', 'oz', 'l', 'ml', 'gal', 'fl_oz', 'each', 'box', 'pack', 'dozen', 'pair', 'set', 'roll'] as const;
 
+// Sellable stock is merchandise (offered at checkout); internal stock is
+// what the business consumes or owns but never sells. See
+// supabase/migrations/20260726030000_inventory_item_kind.sql.
+const ITEM_KINDS = ['sellable', 'internal'] as const;
+
 const categoryBody = z.object({ name: z.string().trim().min(1) });
 
-const itemListQuery = paginationQuery.extend({ categoryId: z.string().uuid().optional() });
+const itemListQuery = paginationQuery.extend({
+  categoryId: z.string().uuid().optional(),
+  kind: z.enum(ITEM_KINDS).optional(),
+});
 
 // Item-level fields only — sku/cost/price/quantity/reorder now live on the
 // item's default variant (see product_variants/inventory_stock). Kept here
 // on POST/create only for the initial default variant this creates; PATCH
 // never touches them, matching create_product_item()/plain-update split.
+//
+// itemKind is the exception: PATCH does change it, but through the
+// set_inventory_item_kind() RPC rather than the plain update below, because
+// switching to internal also has to clear selling prices and refuse while
+// the item sits on an open quotation.
 const itemBody = z.object({
   name: z.string().trim().min(1),
   categoryId: z.string().uuid().optional().nullable(),
   unit: z.enum(UNITS),
   notes: z.string().optional().nullable(),
+  itemKind: z.enum(ITEM_KINDS).optional(),
 });
 
 const createItemBody = itemBody.extend({
@@ -60,7 +74,7 @@ const BATCH_SELECT =
   'inventory_batches(id, branch_id, purchase_price, selling_price, quantity_received, quantity_remaining, source, received_at, purchase_order_id, purchase_orders(po_number))';
 
 const ITEM_SELECT =
-  'id, organization_id, category_id, name, unit, notes, quantity_on_hand, reorder_point, created_at, updated_at, ' +
+  'id, organization_id, category_id, name, unit, item_kind, notes, quantity_on_hand, reorder_point, created_at, updated_at, ' +
   'inventory_categories(name), ' +
   'product_variants(id, name, sku, barcode, unit_cost, unit_price, is_default, status, ' +
   'inventory_stock(branch_id, quantity_on_hand, reorder_point, branches(name)), ' +
@@ -119,6 +133,7 @@ function itemFromRow(row: any) {
     categoryName: cat?.name ?? null,
     name: row.name,
     unit: row.unit,
+    itemKind: row.item_kind ?? 'sellable',
     notes: row.notes,
     quantityOnHand: Number(row.quantity_on_hand),
     reorderPoint: Number(row.reorder_point),
@@ -182,9 +197,12 @@ app.get('/api/inventory/items', validate('query', itemListQuery), async (c) => {
   if (auth instanceof Response) return auth;
 
   let query = auth.client.from('inventory_items').select(ITEM_SELECT).order('created_at', { ascending: false });
-  const { search, categoryId, limit, offset } = c.req.valid('query');
+  const { search, categoryId, kind, limit, offset } = c.req.valid('query');
   if (search) query = query.or(`name.ilike.%${search}%`);
   if (categoryId) query = query.eq('category_id', categoryId);
+  // Omitted entirely = both kinds, which is what the Inventory screen's "All"
+  // tab wants; the two kind tabs pass it explicitly.
+  if (kind) query = query.eq('item_kind', kind);
   query = query.range(offset, offset + limit - 1);
 
   const { data, error } = await query;
@@ -193,17 +211,28 @@ app.get('/api/inventory/items', validate('query', itemListQuery), async (c) => {
 });
 
 // Lean, flat payload for the New Order product picker — every active
-// variant with its price, per-branch stock, and open price/date lots
+// SELLABLE variant with its price, per-branch stock, and open price/date lots
 // (quantity_remaining > 0 only — sold-out lots are dead weight here), no
 // item-level nesting.
+//
+// The item_kind filter is what keeps internal-use stock (cleaning supplies,
+// tools, spare parts) out of New Order, the Cashier screen, quotations, and
+// the checkout barcode scanner — all four read this one endpoint. It's the
+// convenience half of the rule; the enforcing half is the
+// guard_sellable_line_variant() trigger on order_items/quotation_items.
+//
+// !inner on the embed is load-bearing: without it PostgREST filters the
+// embedded object but still returns the parent variant (with a null item),
+// so every internal variant would come back nameless rather than not at all.
 app.get('/api/inventory/variants', async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
   const { data, error } = await auth.client
     .from('product_variants')
-    .select('id, name, sku, barcode, unit_price, inventory_item_id, inventory_items(name, unit), inventory_stock(branch_id, quantity_on_hand), inventory_batches(id, branch_id, purchase_price, selling_price, quantity_remaining, received_at)')
+    .select('id, name, sku, barcode, unit_price, inventory_item_id, inventory_items!inner(name, unit, item_kind), inventory_stock(branch_id, quantity_on_hand), inventory_batches(id, branch_id, purchase_price, selling_price, quantity_remaining, received_at)')
     .eq('status', 'active')
+    .eq('inventory_items.item_kind', 'sellable')
     .order('name', { ascending: true });
   if (error) return sendPgError(c, error);
   return c.json((data ?? []).map((row: any) => {
@@ -275,6 +304,7 @@ app.post('/api/inventory/items', validate('json', createItemBody), async (c) => 
     p_quantity_on_hand: b.quantityOnHand,
     p_reorder_point: b.reorderPoint,
     p_branch_id: b.branchId || null,
+    p_item_kind: b.itemKind ?? 'sellable',
   });
   if (error) return sendPgError(c, error);
 
@@ -288,6 +318,19 @@ app.patch('/api/inventory/items/:id', validate('param', uuidParam), validate('js
   if (auth instanceof Response) return auth;
 
   const b = c.req.valid('json');
+
+  // Kind first, and only through the RPC: it refuses the switch while the
+  // item is on an open quotation and clears now-meaningless selling prices
+  // when it succeeds. Run before the plain field update so a refusal leaves
+  // the item completely untouched rather than half-saved.
+  if (b.itemKind) {
+    const { error: kindError } = await auth.client.rpc('set_inventory_item_kind', {
+      p_item_id: c.req.valid('param').id,
+      p_kind: b.itemKind,
+    });
+    if (kindError) return sendPgError(c, kindError);
+  }
+
   const { data, error } = await auth.client
     .from('inventory_items')
     .update({

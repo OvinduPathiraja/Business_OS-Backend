@@ -10,11 +10,21 @@ import { uuidParam } from '../lib/schemas.js';
 // means: extend this enum + render it in frontend/src/CustomView.tsx.
 const PANELS = ['tasks', 'pos', 'orders', 'queue'] as const;
 
+// How the list-shaped panels (tasks, orders) draw their records. Purely
+// presentational — it never widens what the view can read, so it needs no
+// permission of its own beyond the one already guarding view editing.
+const LAYOUTS = ['table', 'gallery', 'detail'] as const;
+
 const configSchema = z.object({
   panels: z.array(z.enum(PANELS)).min(1),
   // 'mine' = tasks for the signed-in worker's own department; 'all' = the
   // whole org's queue.
   taskScope: z.enum(['mine', 'all']).optional().default('mine'),
+  // Deliberately NOT defaulted: absent means "saved before layouts existed",
+  // and the client renders those panels the way they always rendered
+  // (frontend/src/lib/views.ts → resolveLayout). Defaulting here would
+  // silently restyle every existing view on its next save.
+  layout: z.enum(LAYOUTS).optional(),
 });
 
 const viewBody = z.object({
