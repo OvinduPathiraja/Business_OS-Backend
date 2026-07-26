@@ -26,7 +26,13 @@ const serviceBody = z.object({
   barcode: z.string().optional().nullable(),
 });
 
-const SELECT = 'id, organization_id, name, description, price, duration_options, allows_time, allows_slot, tint, icon, barcode';
+// The completion_* columns are the ORDER COMPLETE node's config. They're
+// carried on the service row (rather than a separate fetch) so the workflow
+// editor can seed itself straight from the Service object it already has as
+// a prop — and are written only through set_service_tasks(), never through
+// the PATCH below, which is a full replace that would clobber them.
+const SELECT =
+  'id, organization_id, name, description, price, duration_options, allows_time, allows_slot, tint, icon, barcode, completion_review_enabled, completion_reviewer_department_id, completion_instructions';
 
 function fromRow(row: any) {
   return {
@@ -41,6 +47,9 @@ function fromRow(row: any) {
     tint: row.tint,
     icon: row.icon,
     barcode: row.barcode,
+    completionReviewEnabled: row.completion_review_enabled,
+    completionReviewerDepartmentId: row.completion_reviewer_department_id,
+    completionInstructions: row.completion_instructions,
   };
 }
 
@@ -130,6 +139,16 @@ const serviceTasksBody = z.object({
       finalizerDepartmentId: z.string().uuid().optional().nullable(),
     })
   ),
+  // The ORDER COMPLETE terminal node. Travels with the steps so the whole
+  // flowchart saves in one transaction — reviewerDepartmentId null while
+  // enabled means "Cashier", the same sentinel finalizerDepartmentId uses.
+  completion: z
+    .object({
+      enabled: z.boolean(),
+      reviewerDepartmentId: z.string().uuid().optional().nullable(),
+      instructions: z.string().optional().nullable(),
+    })
+    .optional(),
 });
 
 const TASK_SELECT =
@@ -162,14 +181,20 @@ app.get('/api/services/:id/tasks', validate('param', uuidParam), async (c) => {
 
 // Replaces the whole chain atomically via the set_service_tasks() RPC — the
 // flowchart editor saves the full workflow in one call (same pattern as
-// set_role_permissions).
+// set_role_permissions). The ORDER COMPLETE config rides along in the same
+// transaction rather than going through PATCH /api/services/:id, which is a
+// full replace requiring `name` and would leave a torn-save window.
+//
+// Full-replace semantics apply to `completion` too: an omitted object turns
+// review off for the service, exactly as an omitted step deletes it.
 app.put('/api/services/:id/tasks', validate('param', uuidParam), validate('json', serviceTasksBody), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
+  const body = c.req.valid('json');
   const { error } = await auth.client.rpc('set_service_tasks', {
     p_service_id: c.req.valid('param').id,
-    p_tasks: c.req.valid('json').tasks.map((t) => ({
+    p_tasks: body.tasks.map((t) => ({
       name: t.name,
       description: t.description || null,
       departmentId: t.departmentId || null,
@@ -177,6 +202,11 @@ app.put('/api/services/:id/tasks', validate('param', uuidParam), validate('json'
       requiresFinalization: t.requiresFinalization ?? false,
       finalizerDepartmentId: t.finalizerDepartmentId || null,
     })),
+    p_completion: {
+      enabled: body.completion?.enabled ?? false,
+      reviewerDepartmentId: body.completion?.reviewerDepartmentId || null,
+      instructions: body.completion?.instructions || null,
+    },
   });
   if (error) return sendPgError(c, error);
   return c.body(null, 204);

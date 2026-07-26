@@ -113,14 +113,28 @@ app.get('/api/organization/settings', async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
-  const { data, error } = await auth.client
-    .from('organization_settings')
-    .select('screen_type, control_size, products_enabled, bookings_enabled, ticketing_enabled, promotions_enabled')
-    .eq('organization_id', auth.organizationId)
-    .maybeSingle();
-  if (error) return sendPgError(c, error);
+  // completionReviewActive is DERIVED, not a stored toggle: it's true when any
+  // service has the ORDER COMPLETE sign-off turned on. It rides on this
+  // response purely because the shell already loads it once at boot, which
+  // gets the nav/badge gate for free with no extra round-trip. The PATCH
+  // below deliberately ignores it — there is no switch to flip.
+  //
+  // The RPC is security definer because a Cashier (the most likely reviewer
+  // of all) typically has no services.view and so couldn't compute this.
+  const [settings, active] = await Promise.all([
+    auth.client
+      .from('organization_settings')
+      .select('screen_type, control_size, products_enabled, bookings_enabled, ticketing_enabled, promotions_enabled')
+      .eq('organization_id', auth.organizationId)
+      .maybeSingle(),
+    auth.client.rpc('completion_review_active'),
+  ]);
+  if (settings.error) return sendPgError(c, settings.error);
+  const completionReviewActive = active.error ? false : !!active.data;
+
+  const data = settings.data;
   if (!data) {
-    return c.json({ screenType: 'guided', controlSize: 'comfortable', productsEnabled: false, bookingsEnabled: true, ticketingEnabled: false, promotionsEnabled: false });
+    return c.json({ screenType: 'guided', controlSize: 'comfortable', productsEnabled: false, bookingsEnabled: true, ticketingEnabled: false, promotionsEnabled: false, completionReviewActive });
   }
   return c.json({
     screenType: data.screen_type,
@@ -129,6 +143,7 @@ app.get('/api/organization/settings', async (c) => {
     bookingsEnabled: data.bookings_enabled,
     ticketingEnabled: data.ticketing_enabled,
     promotionsEnabled: data.promotions_enabled,
+    completionReviewActive,
   });
 });
 
