@@ -13,6 +13,11 @@ const listQuery = z.object({
   // Only tasks with NO department (unassigned) — distinct from omitting the
   // filter entirely.
   unassigned: z.coerce.boolean().optional(),
+  // Done, requires a finalize, and not finalized yet — overrides `status`
+  // entirely (see the branch below) rather than combining with it, since
+  // `status`'s own default ('active') would otherwise AND against 'done' and
+  // silently return nothing.
+  needsFinalization: z.coerce.boolean().optional(),
   limit: z.coerce.number().int().positive().max(500).optional().default(200),
   offset: z.coerce.number().int().min(0).optional().default(0),
 });
@@ -23,7 +28,7 @@ const statusBody = z.object({ status: z.enum(['pending', 'in_progress', 'done'])
 // into orders/services, so accounts whose role has ONLY tasks.view still get
 // complete cards (orders.view would be denied by RLS on a join).
 const SELECT =
-  'id, order_id, order_item_id, service_name, customer_name, name, description, department_id, assigned_employee_id, sort_order, status, started_at, completed_at, created_at';
+  'id, order_id, order_item_id, service_name, customer_name, name, description, department_id, assigned_employee_id, requires_finalization, finalizer_department_id, finalized_at, finalized_by, sort_order, status, started_at, completed_at, created_at';
 
 function fromRow(row: any) {
   return {
@@ -36,6 +41,10 @@ function fromRow(row: any) {
     description: row.description,
     departmentId: row.department_id,
     assignedEmployeeId: row.assigned_employee_id,
+    requiresFinalization: row.requires_finalization,
+    finalizerDepartmentId: row.finalizer_department_id,
+    finalizedAt: row.finalized_at,
+    finalizedBy: row.finalized_by,
     sortOrder: row.sort_order,
     status: row.status,
     startedAt: row.started_at,
@@ -50,7 +59,7 @@ app.get('/api/tasks', validate('query', listQuery), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
-  const { status, departmentId, unassigned, limit, offset } = c.req.valid('query');
+  const { status, departmentId, unassigned, needsFinalization, limit, offset } = c.req.valid('query');
   let query = auth.client
     .from('order_tasks')
     .select(SELECT, { count: 'exact' })
@@ -60,10 +69,14 @@ app.get('/api/tasks', validate('query', listQuery), async (c) => {
     .order('order_id', { ascending: true })
     .order('sort_order', { ascending: true });
 
-  if (status === 'active') query = query.in('status', ['pending', 'in_progress']);
-  else if (status !== 'all') query = query.eq('status', status);
-  if (departmentId) query = query.eq('department_id', departmentId);
-  else if (unassigned) query = query.is('department_id', null);
+  if (needsFinalization) {
+    query = query.eq('status', 'done').eq('requires_finalization', true).is('finalized_at', null);
+  } else {
+    if (status === 'active') query = query.in('status', ['pending', 'in_progress']);
+    else if (status !== 'all') query = query.eq('status', status);
+    if (departmentId) query = query.eq('department_id', departmentId);
+    else if (unassigned) query = query.is('department_id', null);
+  }
   query = query.range(offset, offset + limit - 1);
 
   const { data, error, count } = await query;
@@ -115,6 +128,28 @@ app.patch('/api/tasks/:id', validate('param', uuidParam), validate('json', statu
     .select(SELECT)
     .single();
   if (error) return sendPgError(c, error);
+  return c.json(fromRow(data));
+});
+
+// A narrower action than the status PATCH above: fixed server-set fields
+// only (no client-supplied body), gated by the row still requiring
+// finalization and not already finalized — matches the tasks.finalize RLS
+// policy, which grants write access only for exactly that condition.
+app.post('/api/tasks/:id/finalize', validate('param', uuidParam), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const { data, error } = await auth.client
+    .from('order_tasks')
+    .update({ finalized_at: new Date().toISOString(), finalized_by: auth.userId })
+    .eq('id', c.req.valid('param').id)
+    .eq('status', 'done')
+    .eq('requires_finalization', true)
+    .is('finalized_at', null)
+    .select(SELECT)
+    .maybeSingle();
+  if (error) return sendPgError(c, error);
+  if (!data) return c.json({ error: 'This task cannot be finalized (not found, not done, or already finalized).' }, 409);
   return c.json(fromRow(data));
 });
 
