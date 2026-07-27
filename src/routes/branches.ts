@@ -86,6 +86,22 @@ app.patch('/api/branches/:id', validate('param', uuidParam), validate('json', br
   return c.json(fromRow(data));
 });
 
+// Promoting a branch to the org default. Not a field on PATCH above: it
+// demotes whichever branch is default today, and branches_one_default_idx
+// refuses to let two rows be default even momentarily — so the swap has to
+// happen as one ordered pair of statements inside set_default_branch().
+app.post('/api/branches/:id/default', validate('param', uuidParam), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const { error: rpcError } = await auth.client.rpc('set_default_branch', { p_branch_id: c.req.valid('param').id });
+  if (rpcError) return sendPgError(c, rpcError);
+
+  const { data, error } = await auth.client.from('branches').select(SELECT).eq('id', c.req.valid('param').id).single();
+  if (error) return sendPgError(c, error);
+  return c.json(fromRow(data));
+});
+
 app.delete('/api/branches', validate('json', bulkIdsBody), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
