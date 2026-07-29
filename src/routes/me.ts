@@ -13,6 +13,7 @@ interface MembershipRow {
   organization_id: string;
   organization_name: string;
   currency: string;
+  logo_url: string | null;
   role_id: string;
   role_name: string;
   role_is_owner: boolean;
@@ -88,6 +89,7 @@ app.get('/api/me', async (c) => {
       organizationId: m.organization_id,
       organizationName: m.organization_name,
       currency: m.currency,
+      logoUrl: m.logo_url,
       roleName: m.role_name,
       roleIsOwner: m.role_is_owner,
       status: m.status,
@@ -97,6 +99,7 @@ app.get('/api/me', async (c) => {
     // and its ~23 consumers) keeps working unchanged.
     organizationId: activeOrganizationId,
     organizationName: active?.organization_name ?? null,
+    organizationLogoUrl: active?.logo_url ?? null,
     currency: active?.currency ?? DEFAULT_CURRENCY,
     roleName: active?.role_name ?? null,
     roleIsOwner: active?.role_is_owner ?? false,

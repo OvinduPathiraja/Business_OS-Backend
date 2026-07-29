@@ -7,7 +7,10 @@ import { validate } from '../lib/validate.js';
 import { uuidParam } from '../lib/schemas.js';
 
 const createOrgBody = z.object({ name: z.string().trim().min(1) });
-const updateCurrencyBody = z.object({ currency: z.string().length(3) });
+const updateOrgBody = z.object({
+  currency: z.string().length(3).optional(),
+  logoUrl: z.string().trim().max(2048).nullable().optional(),
+});
 const settingsBody = z.object({
   screenType: z.enum(['guided', 'single', 'compact']).optional(),
   controlSize: z.enum(['comfortable', 'large', 'xlarge']).optional(),
@@ -97,13 +100,17 @@ app.post('/api/organizations/:id/delete', validate('param', uuidParam), async (c
   return c.body(null, 204);
 });
 
-app.patch('/api/organization', validate('json', updateCurrencyBody), async (c) => {
+app.patch('/api/organization', validate('json', updateOrgBody), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
+  const body = c.req.valid('json');
   const { error } = await auth.client
     .from('organizations')
-    .update({ currency: c.req.valid('json').currency })
+    .update({
+      ...(body.currency !== undefined ? { currency: body.currency } : {}),
+      ...(body.logoUrl !== undefined ? { logo_url: body.logoUrl } : {}),
+    })
     .eq('id', auth.organizationId);
   if (error) return sendPgError(c, error);
   return c.body(null, 204);

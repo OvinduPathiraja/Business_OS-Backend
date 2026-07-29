@@ -38,6 +38,7 @@ const itemBody = z.object({
   unit: z.enum(UNITS),
   notes: z.string().optional().nullable(),
   itemKind: z.enum(ITEM_KINDS).optional(),
+  imageUrl: z.string().trim().max(2048).optional().nullable(),
 });
 
 const createItemBody = itemBody.extend({
@@ -89,7 +90,7 @@ const BATCH_SELECT =
   'inventory_batches(id, branch_id, purchase_price, selling_price, quantity_received, quantity_remaining, source, received_at, purchase_order_id, purchase_orders(po_number))';
 
 const ITEM_SELECT =
-  'id, organization_id, category_id, name, unit, item_kind, notes, quantity_on_hand, reorder_point, created_at, updated_at, ' +
+  'id, organization_id, category_id, name, unit, item_kind, notes, image_url, quantity_on_hand, reorder_point, created_at, updated_at, ' +
   'inventory_categories(name), ' +
   'product_variants(id, name, sku, barcode, unit_cost, unit_price, is_default, status, sort_order, ' +
   'inventory_stock(branch_id, quantity_on_hand, reorder_point, branches(name)), ' +
@@ -155,6 +156,7 @@ function itemFromRow(row: any) {
     unit: row.unit,
     itemKind: row.item_kind ?? 'sellable',
     notes: row.notes,
+    imageUrl: row.image_url,
     quantityOnHand: Number(row.quantity_on_hand),
     reorderPoint: Number(row.reorder_point),
     createdAt: row.created_at,
@@ -340,6 +342,7 @@ app.post('/api/inventory/items', validate('json', createItemBody), async (c) => 
     p_reorder_point: b.reorderPoint,
     p_branch_id: b.branchId || null,
     p_item_kind: b.itemKind ?? 'sellable',
+    p_image_url: b.imageUrl || null,
   });
   if (error) return sendPgError(c, error);
 
@@ -373,6 +376,7 @@ app.patch('/api/inventory/items/:id', validate('param', uuidParam), validate('js
       name: b.name,
       unit: b.unit,
       notes: b.notes || null,
+      image_url: b.imageUrl || null,
       updated_at: new Date().toISOString(),
     })
     .eq('id', c.req.valid('param').id)
