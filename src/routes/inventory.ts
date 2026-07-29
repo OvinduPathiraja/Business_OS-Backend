@@ -258,7 +258,7 @@ app.get('/api/inventory/variants', async (c) => {
 
   const { data, error } = await auth.client
     .from('product_variants')
-    .select('id, name, sku, barcode, unit_price, sort_order, inventory_item_id, inventory_items!inner(name, unit, item_kind), inventory_stock(branch_id, quantity_on_hand), inventory_batches(id, branch_id, purchase_price, selling_price, quantity_remaining, received_at)')
+    .select('id, name, sku, barcode, unit_price, sort_order, inventory_item_id, inventory_items!inner(name, unit, item_kind, image_urls), inventory_stock(branch_id, quantity_on_hand), inventory_batches(id, branch_id, purchase_price, selling_price, quantity_remaining, received_at)')
     .eq('status', 'active')
     .eq('inventory_items.item_kind', 'sellable');
   if (error) return sendPgError(c, error);
@@ -291,6 +291,9 @@ app.get('/api/inventory/variants', async (c) => {
       barcode: row.barcode,
       unitPrice: Number(row.unit_price),
       unit: item?.unit ?? 'each',
+      // The item's default image — imageUrls[0], see MultiImagePickerField's
+      // "Set as default" (moves the chosen photo to the front of the array).
+      imageUrl: Array.isArray(item?.image_urls) && item.image_urls.length > 0 ? item.image_urls[0] : null,
       stockByBranch: stock.map((s: any) => ({ branchId: s.branch_id, quantityOnHand: Number(s.quantity_on_hand) })),
       batches: batches
         .filter((b: any) => Number(b.quantity_remaining) > 0)

@@ -68,7 +68,7 @@ const completeOrderBody = z.object({
 });
 
 const ORDER_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, discount, charges, tax, total, notes, booking_id, branch_id, created_at, order_items(count)';
-const ORDER_DETAIL_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, discount, charges, tax, total, notes, booking_id, branch_id, created_at, order_items(id, service_id, variant_id, batch_id, item_name, quantity, unit_price, line_total), order_promotions(id, promotion_name, reward_type, amount), order_charges(id, charge_name, amount)';
+const ORDER_DETAIL_SELECT = 'id, organization_id, customer_id, customer_name, status, subtotal, discount, charges, tax, total, notes, booking_id, branch_id, created_at, order_items(id, service_id, variant_id, batch_id, item_name, quantity, unit_price, line_total, product_variants(inventory_items(image_urls))), order_promotions(id, promotion_name, reward_type, amount), order_charges(id, charge_name, amount)';
 
 function orderFromRow(row: any) {
   const itemCountRow = Array.isArray(row.order_items) ? row.order_items[0] : row.order_items;
@@ -87,10 +87,22 @@ function orderWithItemsFromRow(row: any) {
     id: row.id, organizationId: row.organization_id, customerId: row.customer_id, customerName: row.customer_name,
     status: row.status, subtotal: Number(row.subtotal), discount: Number(row.discount ?? 0), charges: Number(row.charges ?? 0), tax: Number(row.tax), total: Number(row.total),
     notes: row.notes, bookingId: row.booking_id, branchId: row.branch_id, itemCount: items.length, createdAt: row.created_at,
-    items: items.map((it) => ({
-      id: it.id, serviceId: it.service_id, variantId: it.variant_id, batchId: it.batch_id, itemName: it.item_name,
-      quantity: Number(it.quantity), unitPrice: Number(it.unit_price), lineTotal: Number(it.line_total),
-    })),
+    items: items.map((it) => {
+      // The line's product photo, read live off its variant's item — order
+      // lines don't snapshot an image the way they snapshot itemName/price,
+      // so this reflects the item's current default (imageUrls[0]), not
+      // necessarily what it looked like at sale time. Null for a service
+      // line (no variant_id) or if the viewer lacks inventory.view (the
+      // embed is RLS-scoped too, same as any other nested select).
+      const variant = Array.isArray(it.product_variants) ? it.product_variants[0] : it.product_variants;
+      const invItem = variant ? (Array.isArray(variant.inventory_items) ? variant.inventory_items[0] : variant.inventory_items) : null;
+      const imageUrl = Array.isArray(invItem?.image_urls) && invItem.image_urls.length > 0 ? invItem.image_urls[0] : null;
+      return {
+        id: it.id, serviceId: it.service_id, variantId: it.variant_id, batchId: it.batch_id, itemName: it.item_name,
+        quantity: Number(it.quantity), unitPrice: Number(it.unit_price), lineTotal: Number(it.line_total),
+        imageUrl,
+      };
+    }),
     promotions: promotions.map((p) => ({
       id: p.id, name: p.promotion_name, rewardType: p.reward_type, amount: Number(p.amount),
     })),
