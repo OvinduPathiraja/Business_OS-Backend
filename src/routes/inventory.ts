@@ -58,6 +58,21 @@ const variantBody = z.object({
   unitPrice: z.number(),
 });
 
+// Size-chart bulk add — one call for N sizes instead of N round trips (see
+// add_product_variants() in supabase/migrations/20260729000000_product_variant_sizes.sql).
+// Each element needs its own required unitPrice (not inherited server-side)
+// so the RPC never has to guess a price; the client pre-fills it from the
+// item's current default-variant price and lets the merchant override it.
+const variantsBulkBody = z.object({
+  variants: z.array(z.object({
+    name: z.string().trim().min(1),
+    sku: z.string().optional().nullable(),
+    barcode: z.string().optional().nullable(),
+    unitCost: z.number().optional().nullable(),
+    unitPrice: z.number(),
+  })).min(1).max(100),
+});
+
 const stockBody = z.object({
   quantityOnHand: z.number(),
   reorderPoint: z.number(),
@@ -76,7 +91,7 @@ const BATCH_SELECT =
 const ITEM_SELECT =
   'id, organization_id, category_id, name, unit, item_kind, notes, quantity_on_hand, reorder_point, created_at, updated_at, ' +
   'inventory_categories(name), ' +
-  'product_variants(id, name, sku, barcode, unit_cost, unit_price, is_default, status, ' +
+  'product_variants(id, name, sku, barcode, unit_cost, unit_price, is_default, status, sort_order, ' +
   'inventory_stock(branch_id, quantity_on_hand, reorder_point, branches(name)), ' +
   `${BATCH_SELECT})`;
 
@@ -125,7 +140,12 @@ function variantFromRow(row: any) {
 
 function itemFromRow(row: any) {
   const cat = Array.isArray(row.inventory_categories) ? row.inventory_categories[0] : row.inventory_categories;
-  const variants = Array.isArray(row.product_variants) ? row.product_variants : [];
+  // sort_order first (a size chart's own order), name as the tiebreak for
+  // pre-existing variants that all share the column default of 0 — see
+  // supabase/migrations/20260729000000_product_variant_sizes.sql.
+  const variants = (Array.isArray(row.product_variants) ? row.product_variants : [])
+    .slice()
+    .sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || String(a.name).localeCompare(String(b.name)));
   return {
     id: row.id,
     organizationId: row.organization_id,
@@ -230,12 +250,27 @@ app.get('/api/inventory/variants', async (c) => {
 
   const { data, error } = await auth.client
     .from('product_variants')
-    .select('id, name, sku, barcode, unit_price, inventory_item_id, inventory_items!inner(name, unit, item_kind), inventory_stock(branch_id, quantity_on_hand), inventory_batches(id, branch_id, purchase_price, selling_price, quantity_remaining, received_at)')
+    .select('id, name, sku, barcode, unit_price, sort_order, inventory_item_id, inventory_items!inner(name, unit, item_kind), inventory_stock(branch_id, quantity_on_hand), inventory_batches(id, branch_id, purchase_price, selling_price, quantity_remaining, received_at)')
     .eq('status', 'active')
-    .eq('inventory_items.item_kind', 'sellable')
-    .order('name', { ascending: true });
+    .eq('inventory_items.item_kind', 'sellable');
   if (error) return sendPgError(c, error);
-  return c.json((data ?? []).map((row: any) => {
+
+  // Grouped by item, then in size-chart order within it — not a flat
+  // alphabetical-by-variant-name sort, which would scatter one product's
+  // sizes apart from each other and sort "10, 11, 9" numerically wrong. Done
+  // in JS rather than a PostgREST embedded-table .order() to avoid relying on
+  // that syntax working the same way across embed shapes.
+  const itemNameOf = (row: any) => {
+    const item = Array.isArray(row.inventory_items) ? row.inventory_items[0] : row.inventory_items;
+    return item?.name ?? '';
+  };
+  const sorted = (data ?? []).slice().sort((a: any, b: any) =>
+    itemNameOf(a).localeCompare(itemNameOf(b)) ||
+    ((a.sort_order ?? 0) - (b.sort_order ?? 0)) ||
+    String(a.name).localeCompare(String(b.name))
+  );
+
+  return c.json(sorted.map((row: any) => {
     const item = Array.isArray(row.inventory_items) ? row.inventory_items[0] : row.inventory_items;
     const stock = Array.isArray(row.inventory_stock) ? row.inventory_stock : [];
     const batches = Array.isArray(row.inventory_batches) ? row.inventory_batches : [];
@@ -378,6 +413,32 @@ app.post('/api/inventory/items/:id/variants', validate('param', uuidParam), vali
     .single();
   if (fetchError) return sendPgError(c, fetchError);
   return c.json(variantFromRow(row), 201);
+});
+
+// Size-chart bulk add — see add_product_variants() and variantsBulkBody's
+// comment above. Returns the whole refreshed item (rather than just the new
+// variants) so the caller can do one setEditing(item)-style replace instead
+// of splicing an array in by hand.
+app.post('/api/inventory/items/:id/variants/bulk', validate('param', uuidParam), validate('json', variantsBulkBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const b = c.req.valid('json');
+  const { error } = await auth.client.rpc('add_product_variants', {
+    p_inventory_item_id: c.req.valid('param').id,
+    p_variants: b.variants.map((v) => ({
+      name: v.name,
+      sku: v.sku || null,
+      barcode: v.barcode || null,
+      unitCost: v.unitCost ?? null,
+      unitPrice: v.unitPrice,
+    })),
+  });
+  if (error) return sendPgError(c, error);
+
+  const { data: row, error: fetchError } = await auth.client.from('inventory_items').select(ITEM_SELECT).eq('id', c.req.valid('param').id).single();
+  if (fetchError) return sendPgError(c, fetchError);
+  return c.json(itemFromRow(row), 201);
 });
 
 app.patch('/api/inventory/variants/:id', validate('param', uuidParam), validate('json', variantBody), async (c) => {
