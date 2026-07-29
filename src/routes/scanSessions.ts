@@ -55,6 +55,9 @@ const pushEventBody = z.object({
   clientScanId: z.string().trim().min(1).max(64),
 });
 
+// Which end of a pairing the caller is asking about — see the route comment.
+const currentQuery = z.object({ role: z.enum(['host', 'device']).optional() });
+
 const listEventsQuery = z.object({
   status: z.enum(['pending', 'added', 'unknown', 'out_of_stock', 'error', 'all']).optional().default('pending'),
   limit: z.coerce.number().int().positive().max(200).optional().default(50),
@@ -164,26 +167,43 @@ app.post('/api/scan-sessions', validate('json', createBody), async (c) => {
 // How both apps recover a pairing after a reload, a restart, or being
 // backgrounded: ask the server rather than trusting anything stored locally.
 // Registered before any '/api/scan-sessions/:id'-shaped route.
-app.get('/api/scan-sessions/current', async (c) => {
+//
+// `role` is which END of a pairing the caller is, and callers must send it.
+// The server CANNOT reliably infer it: one account signed in on both the till
+// and the phone (an owner-operator, or anyone testing alone) makes
+// host_user_id and device_user_id the same value, and identity alone then says
+// "host" to both. The phone, told it was the host, used to conclude it had no
+// pairing and silently unlink itself on its next poll.
+app.get('/api/scan-sessions/current', validate('query', currentQuery), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
-  // RLS already limits this to sessions the caller participates in, so no
-  // user filter is needed here — only the liveness one.
-  const { data, error } = await auth.client
+  const { role: asRole } = c.req.valid('query');
+
+  let query = auth.client
     .from('scan_sessions')
     .select(SESSION_SELECT)
     .in('status', ['pending', 'linked'])
     .gt('expires_at', new Date().toISOString())
     .order('created_at', { ascending: false })
     .limit(1);
+
+  // Match on the column for the end being asked about. For 'device' this also
+  // excludes not-yet-claimed sessions for free — their device_user_id is null.
+  if (asRole === 'host') query = query.eq('host_user_id', auth.userId);
+  else if (asRole === 'device') query = query.eq('device_user_id', auth.userId);
+
+  const { data, error } = await query;
   if (error) return sendPgError(c, error);
 
   const row = (data ?? [])[0];
   if (!row) return c.json({ session: null, role: null });
 
   const session = sessionFromRow(row);
-  const role = session.hostUserId === auth.userId ? 'host' : 'device';
+  // Trust what the caller said it is; fall back to inference only for a caller
+  // that sent nothing (no shipped client does, but the param stays optional so
+  // an older build in the wild keeps its previous behaviour rather than 400ing).
+  const role = asRole ?? (session.hostUserId === auth.userId ? 'host' : 'device');
   return c.json({ session, role });
 });
 
