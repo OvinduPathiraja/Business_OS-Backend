@@ -20,6 +20,7 @@ function statusForCode(code: string | undefined): 400 | 403 | 404 | 409 | 500 {
     case 'PGRST116': // .single() found no row
       return 404;
     case 'P0001': // plpgsql `raise exception` — every existing RPC guard uses this
+    case '23514': // check violation (e.g. inventory_items_image_urls_max5)
       return 400;
     default:
       return 500;
