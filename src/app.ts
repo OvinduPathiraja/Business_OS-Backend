@@ -37,6 +37,7 @@ import queueRoutes from './routes/queue.js';
 import scanSessionsRoutes from './routes/scanSessions.js';
 import viewsRoutes from './routes/views.js';
 import impersonationRoutes from './routes/impersonation.js';
+import uploadsRoutes from './routes/uploads.js';
 
 export function buildApp() {
   const app = new Hono<{ Bindings: Bindings }>();
@@ -112,6 +113,7 @@ export function buildApp() {
   app.route('/', scanSessionsRoutes);
   app.route('/', viewsRoutes);
   app.route('/', impersonationRoutes);
+  app.route('/', uploadsRoutes);
 
   return app;
 }
