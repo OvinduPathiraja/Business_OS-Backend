@@ -45,6 +45,11 @@ app.get('/api/admin/me', async (c) => {
       impersonate: ['support', 'billing', 'superadmin'].includes(auth.role),
       suspendOrgs: auth.role === 'superadmin',
       manageAdmins: auth.role === 'superadmin',
+      // Creating a customer's account + workspace + plan is a billing act:
+      // it commits them to a price. Signing one of their devices out is
+      // help-desk work, so it sits a rank lower.
+      provision: ['billing', 'superadmin'].includes(auth.role),
+      manageDevices: ['support', 'billing', 'superadmin'].includes(auth.role),
     },
   });
 });

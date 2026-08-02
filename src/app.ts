@@ -38,6 +38,8 @@ import scanSessionsRoutes from './routes/scanSessions.js';
 import viewsRoutes from './routes/views.js';
 import impersonationRoutes from './routes/impersonation.js';
 import uploadsRoutes from './routes/uploads.js';
+import devicesRoutes from './routes/devices.js';
+import billingRoutes from './routes/billing.js';
 import adminRoutes from './routes/admin/index.js';
 import publicRoutes from './routes/public.js';
 import { requestLogger } from './lib/requestLog.js';
@@ -124,6 +126,8 @@ export function buildApp() {
   app.route('/', viewsRoutes);
   app.route('/', impersonationRoutes);
   app.route('/', uploadsRoutes);
+  app.route('/', devicesRoutes);
+  app.route('/', billingRoutes);
 
   // Unauthenticated: the marketing site's contact form and page beacon. Kept
   // last and in their own file so the boundary between "needs a bearer token"

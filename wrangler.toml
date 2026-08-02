@@ -28,3 +28,11 @@ PUBLIC_APP_URL = "https://businessos.ovindupathiraja08.workers.dev"
 # Resend domain once one exists; sandbox only delivers to the Resend
 # account's own registered email.
 EMAIL_FROM_ADDRESS = "Business OS <onboarding@resend.dev>"
+# Whether a lapsed subscription actually stops writes (lib/auth.ts). Ships OFF
+# so the whole feature can be deployed and watched before it can hurt anyone:
+# 20260730010000_platform_billing.sql put every organization that existed when
+# it was applied onto a 14-day trial dated from that day, so if that was more
+# than two weeks ago, flipping this to "on" without reconciling subscriptions
+# first turns EVERY tenant read-only at once. Reconcile, verify with the query
+# in Business-os-superadmin/README.md, then `wrangler deploy` with "on".
+SUBSCRIPTION_GATE = "off"

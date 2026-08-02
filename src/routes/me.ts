@@ -38,15 +38,22 @@ app.get('/api/me', async (c) => {
   const auth = await requireUser(c);
   if (auth instanceof Response) return auth;
 
-  const [profileResult, membershipsResult, activeOrgResult] = await Promise.all([
+  const [profileResult, membershipsResult, activeOrgResult, subscriptionResult] = await Promise.all([
     auth.client.from('profiles').select('id, full_name').eq('id', auth.userId).single(),
     auth.client.rpc('list_my_memberships'),
     auth.client.rpc('current_organization_id'),
+    // Free — this was already three parallel calls. Returns null for a caller
+    // with no active org, which is exactly what the client should show.
+    auth.client.rpc('my_subscription_state'),
   ]);
 
   if (profileResult.error) return sendPgError(c, profileResult.error);
   if (membershipsResult.error) return sendPgError(c, membershipsResult.error);
   if (activeOrgResult.error) return sendPgError(c, activeOrgResult.error);
+  // Deliberately not fatal. A failure here (an unapplied migration, most
+  // likely) must not stop the whole app from loading — the client treats a
+  // missing subscription as full access, same as the RPC does.
+  const subscription = subscriptionResult.error ? null : (subscriptionResult.data ?? null);
 
   const memberships = (membershipsResult.data ?? []) as MembershipRow[];
   const activeOrganizationId = (activeOrgResult.data as string | null) ?? null;
@@ -118,6 +125,11 @@ app.get('/api/me', async (c) => {
     permissions,
     departmentId,
     view,
+    // What this organization's plan entitles them to right now — see
+    // 20260803010000_subscription_access_gate.sql. Drives the trial countdown
+    // banner, the read-only banner, and the Billing screen. Null means "no
+    // subscription row", which every caller must read as full access.
+    subscription,
   });
 });
 

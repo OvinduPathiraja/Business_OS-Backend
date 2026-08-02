@@ -3,6 +3,7 @@ import type { Bindings } from '../../lib/supabase.js';
 import overviewRoutes from './overview.js';
 import organizationsRoutes from './organizations.js';
 import billingRoutes from './billing.js';
+import provisioningRoutes from './provisioning.js';
 import usersRoutes from './users.js';
 import trafficRoutes from './traffic.js';
 import inquiriesRoutes from './inquiries.js';
@@ -31,6 +32,7 @@ export function buildAdminRoutes() {
   app.route('/', overviewRoutes);
   app.route('/', organizationsRoutes);
   app.route('/', billingRoutes);
+  app.route('/', provisioningRoutes);
   app.route('/', usersRoutes);
   app.route('/', trafficRoutes);
   app.route('/', inquiriesRoutes);

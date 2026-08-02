@@ -25,6 +25,14 @@ export type Bindings = {
   // so nothing breaks if they're never provided.
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
+  // Kill switch for the subscription read-only gate in lib/auth.ts. Defaults
+  // to OFF, and that default is load-bearing rather than cautious:
+  // 20260730010000_platform_billing.sql backfilled every organization that
+  // existed at apply time onto a 14-day trial dated from that day, so if the
+  // backfill is more than two weeks old, switching this on without first
+  // reconciling real subscriptions puts the entire customer base into
+  // read-only in one deploy. Ship dark, reconcile, then flip the var.
+  SUBSCRIPTION_GATE?: 'on' | 'off';
 };
 
 // Runs every query *as* the calling user (their JWT is forwarded as the

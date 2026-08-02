@@ -97,12 +97,35 @@ app.get('/api/admin/organizations/:id', validate('param', uuidParam), async (c) 
   const auth = await requirePlatformAdmin(c);
   if (auth instanceof Response) return auth;
 
-  const { data, error } = await auth.client.rpc('platform_org_detail', {
-    p_organization_id: c.req.valid('param').id,
-  });
-  if (error) return sendPgError(c, error);
-  if (!data || !(data as { organization?: unknown }).organization) {
+  const organizationId = c.req.valid('param').id;
+
+  // Two RPCs rather than one. platform_org_detail() is a large function that
+  // several screens depend on, and the lifecycle dates + grace window this
+  // console now needs live in organization_access_state() — which is also
+  // what the gate and the tenant's own billing screen read, so merging it
+  // here means the console can never show a different answer to the one being
+  // enforced. Copying platform_org_detail() forward to add four fields would
+  // have been the other option, and it is the riskier one: that function is
+  // ~150 lines and is not owned by this feature.
+  //
+  // This is a single-organization drawer, not a hot path — one extra round
+  // trip is the cheaper side of the trade.
+  const [detailResult, accessResult] = await Promise.all([
+    auth.client.rpc('platform_org_detail', { p_organization_id: organizationId }),
+    auth.client.rpc('organization_access_state', { p_organization_id: organizationId }),
+  ]);
+
+  if (detailResult.error) return sendPgError(c, detailResult.error);
+  const data = detailResult.data as { organization?: unknown; subscription?: Record<string, unknown> | null } | null;
+  if (!data || !data.organization) {
     return c.json({ error: 'Organization not found.' }, 404);
+  }
+
+  // Non-fatal, and null-safe: an organization with no subscription row gets
+  // null from the RPC, and the drawer already handles a null subscription.
+  const access = accessResult.error ? null : (accessResult.data as Record<string, unknown> | null);
+  if (access && data.subscription) {
+    data.subscription = { ...data.subscription, ...access };
   }
 
   return c.json(data);
