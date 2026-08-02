@@ -38,6 +38,9 @@ import scanSessionsRoutes from './routes/scanSessions.js';
 import viewsRoutes from './routes/views.js';
 import impersonationRoutes from './routes/impersonation.js';
 import uploadsRoutes from './routes/uploads.js';
+import adminRoutes from './routes/admin/index.js';
+import publicRoutes from './routes/public.js';
+import { requestLogger } from './lib/requestLog.js';
 
 export function buildApp() {
   const app = new Hono<{ Bindings: Bindings }>();
@@ -68,6 +71,13 @@ export function buildApp() {
     }
     await next();
   });
+
+  // Traffic logging for the operator console's Traffic screen. Mounted AFTER
+  // the rate limiter on purpose — a request rejected with 429 should still be
+  // counted, since a spike in those is exactly the kind of thing the screen
+  // exists to make visible. It records only after the response is ready and
+  // never blocks it (see lib/requestLog.ts).
+  app.use('*', requestLogger());
 
   // Safety net for anything unexpected — Postgres/PostgREST errors returned
   // as `{ error }` from a supabase-js call are handled at the call site via
@@ -114,6 +124,15 @@ export function buildApp() {
   app.route('/', viewsRoutes);
   app.route('/', impersonationRoutes);
   app.route('/', uploadsRoutes);
+
+  // Unauthenticated: the marketing site's contact form and page beacon. Kept
+  // last and in their own file so the boundary between "needs a bearer token"
+  // and "open to the internet" stays obvious (see routes/public.ts).
+  app.route('/', publicRoutes);
+
+  // The platform operator console — cross-tenant, gated by
+  // requirePlatformAdmin() rather than by RLS (see lib/platformAuth.ts).
+  app.route('/', adminRoutes);
 
   return app;
 }

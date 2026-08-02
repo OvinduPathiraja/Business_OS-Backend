@@ -19,6 +19,12 @@ export type Bindings = {
   // account invites) don't go through this.
   RESEND_API_KEY: string;
   EMAIL_FROM_ADDRESS: string;
+  // Cloudflare Analytics, read by the operator console's Traffic screen
+  // (backend/src/lib/cloudflareAnalytics.ts). Optional — the screen reports
+  // "not configured" and falls back to its other tabs when these are unset,
+  // so nothing breaks if they're never provided.
+  CF_API_TOKEN?: string;
+  CF_ACCOUNT_ID?: string;
 };
 
 // Runs every query *as* the calling user (their JWT is forwarded as the

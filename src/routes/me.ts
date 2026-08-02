@@ -18,6 +18,11 @@ interface MembershipRow {
   role_name: string;
   role_is_owner: boolean;
   status: 'active' | 'on_leave' | 'invited';
+  // The ORGANIZATION's status, not the membership's. A suspended org makes
+  // current_organization_id() return null, which also hides the organizations
+  // row from its own members — so this is the only channel through which the
+  // app can distinguish "suspended by the operator" from "you have no org".
+  organization_status: 'active' | 'suspended' | 'archived';
 }
 
 // requireUser, not requireOrg — this route must work for a user with zero
@@ -93,7 +98,14 @@ app.get('/api/me', async (c) => {
       roleName: m.role_name,
       roleIsOwner: m.role_is_owner,
       status: m.status,
+      organizationStatus: m.organization_status,
     })),
+    // Set when the caller's only/last-used organization exists but is not
+    // active, so the app can say so instead of showing the no-organization
+    // onboarding flow to a customer whose account was merely suspended.
+    suspendedOrganization: activeOrganizationId
+      ? null
+      : memberships.find((m) => m.status === 'active' && m.organization_status !== 'active')?.organization_name ?? null,
     // Flattened convenience fields mirroring the active membership — kept so
     // every existing single-org call site (frontend/src/auth.tsx's Profile
     // and its ~23 consumers) keeps working unchanged.
