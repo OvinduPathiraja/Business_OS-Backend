@@ -6,17 +6,27 @@ import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { MAX_RANGE_DAYS, computePeriodStats, dateKey, parseDateKey, rangeDays, resolveRange } from '../lib/periodStats.js';
 import { computeCashFlowStats } from '../lib/cashFlowStats.js';
+import { buildFinanceSeries } from '../lib/financeSeries.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-const reportsQuery = z.object({
+const dateRangeShape = z.object({
   from: z.string().regex(DATE_RE).optional(),
   to: z.string().regex(DATE_RE).optional(),
 }).refine((q) => (q.from == null) === (q.to == null), { message: 'from and to must be provided together' })
-  .refine((q) => !q.from || !q.to || parseDateKey(q.from) <= parseDateKey(q.to), { message: 'from must not be after to' })
-  .refine((q) => !q.from || !q.to || rangeDays({ from: parseDateKey(q.from), to: parseDateKey(q.to) }) <= MAX_RANGE_DAYS, {
-    message: `Date range cannot exceed ${MAX_RANGE_DAYS} days`,
-  });
+  .refine((q) => !q.from || !q.to || parseDateKey(q.from) <= parseDateKey(q.to), { message: 'from must not be after to' });
+
+const reportsQuery = dateRangeShape.refine((q) => !q.from || !q.to || rangeDays({ from: parseDateKey(q.from), to: parseDateKey(q.to) }) <= MAX_RANGE_DAYS, {
+  message: `Date range cannot exceed ${MAX_RANGE_DAYS} days`,
+});
+
+// The finance statement is a bookkeeping report, not a scale-bounded
+// dashboard query — an owner or accountant legitimately wants "since we
+// opened," which can mean a decade. It's the same handful of grouped-sum
+// queries regardless of window length (no per-day iteration like
+// computePeriodStats' dailyRevenue), so there's no technical reason to cap
+// it the way the other three report endpoints are capped.
+const financeReportQuery = dateRangeShape;
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -77,7 +87,7 @@ app.get('/api/reports/pnl', validate('query', reportsQuery), async (c) => {
 // per-ledger money in/out for the org's custom ledgers, all over one selected
 // period. Each block is scoped by its own RLS policy — a viewer without e.g.
 // bank.view just gets zeros for the bank block rather than an error.
-app.get('/api/reports/finance', validate('query', reportsQuery), async (c) => {
+app.get('/api/reports/finance', validate('query', financeReportQuery), async (c) => {
   const auth = await requireUser(c);
   if (auth instanceof Response) return auth;
 
@@ -128,6 +138,12 @@ app.get('/api/reports/finance', validate('query', reportsQuery), async (c) => {
   const bankBalance = (bankRes.data ?? []).reduce((sum, a: any) => sum + Number(a.current_balance), 0);
   const cashBalance = (cashRes.data ?? []).reduce((sum, r: any) => sum + Number(r.current_balance), 0);
 
+  // Bucketed for the Inflows/Outflows and Growth charts — same two datasets
+  // as `revenue`/`totalExpenses` above, just grouped by period instead of
+  // summed outright, so the chart's totals always reconcile with the KPIs
+  // it sits under.
+  const { granularity, series } = buildFinanceSeries(range, (revenueRes.data ?? []) as any, (expensesRes.data ?? []) as any);
+
   return c.json({
     from: fromKey,
     to: toKey,
@@ -135,6 +151,8 @@ app.get('/api/reports/finance', validate('query', reportsQuery), async (c) => {
     totalExpenses,
     netProfit: revenue - totalExpenses,
     expenseBreakdown,
+    granularity,
+    series,
     taxCollected,
     taxPaid,
     taxNet: taxCollected - taxPaid,
