@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Bindings } from '../lib/supabase.js';
 import { createServiceClient, createAnonClient } from '../lib/supabase.js';
-import { requireOrg, requireUser } from '../lib/auth.js';
+import { requireOrg, requireUser, sessionIdFromJwt } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { uuidParam } from '../lib/schemas.js';
@@ -54,6 +54,28 @@ app.post('/api/impersonate', validate('json', startBody), async (c) => {
   }
 
   const { session } = verifyData;
+
+  // Records which specific auth session this token belongs to, so
+  // requireUser()'s is_impersonation_write_blocked() check (see
+  // 20260804050000_impersonation_write_enforcement.sql) can enforce
+  // "read-only while viewing as someone" server-side rather than only in
+  // shared/apiClient.ts. Uses the ADMIN's own client (auth.client, from
+  // requireOrg() above) — never the target's — which is what makes the
+  // admin_user_id = auth.uid() check inside the RPC hold. A failure here
+  // must fail the whole request: if the session is never recorded, the
+  // write block silently never applies to it.
+  const targetSessionId = sessionIdFromJwt(session.access_token);
+  if (targetSessionId) {
+    const { error: recordError } = await auth.client.rpc('record_impersonation_auth_session', {
+      p_session_id: started.session_id,
+      p_auth_session_id: targetSessionId,
+    });
+    if (recordError) {
+      await auth.client.rpc('end_impersonation_session', { p_session_id: started.session_id });
+      return c.json({ error: 'Could not start that session.' }, 500);
+    }
+  }
+
   return c.json({
     sessionId: started.session_id,
     accessToken: session.access_token,

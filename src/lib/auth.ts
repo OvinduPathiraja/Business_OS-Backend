@@ -18,6 +18,26 @@ export interface OrgAuthResult extends AuthResult {
 
 type HonoContext = Context<{ Bindings: Bindings }>;
 
+// Reads the `session_id` claim WITHOUT verifying the signature. Safe here for
+// the same reason requestLog.ts's subjectFromJwt() is: only ever called AFTER
+// client.auth.getUser(token) has already verified this exact token's
+// signature and expiry moments earlier in requireUser() below. Used to look
+// up whether THIS SPECIFIC session was minted by an impersonation RPC (see
+// is_impersonation_write_blocked() in
+// 20260804050000_impersonation_write_enforcement.sql) — never to authorize
+// anything by itself.
+export function sessionIdFromJwt(token: string): string | null {
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return null;
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+    const sessionId = (JSON.parse(json) as { session_id?: string }).session_id;
+    return sessionId ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // What my_request_gate() answers — see
 // 20260803010000_subscription_access_gate.sql.
 interface RequestGate {
@@ -79,6 +99,35 @@ export async function requireUser(c: HonoContext): Promise<AuthResult | Response
     return c.json({ error: 'Invalid or expired session.' }, 401);
   }
 
+  const isWrite = c.req.method !== 'GET' && c.req.method !== 'OPTIONS' && c.req.method !== 'HEAD';
+
+  // ---------------------------------------------------------------------
+  // Impersonation write block. Found missing entirely during the
+  // 2026-08-04 security assessment: the only prior enforcement of "view as
+  // is read-only" was shared/apiClient.ts's IMPERSONATION_READ_ONLY check,
+  // which runs client-side and is trivially bypassed by any caller that
+  // isn't the app's own bundled apiClient.ts (curl, devtools, a captured
+  // token). Runs unconditionally on every write — unlike the subscription
+  // gate below, which is feature-flagged off today — because this closes a
+  // real elevation-of-privilege gap, not a billing policy. Session-scoped,
+  // not user-scoped: the target's own, independent, concurrent login
+  // carries a different session_id and is never affected.
+  // ---------------------------------------------------------------------
+  if (isWrite) {
+    const sessionId = sessionIdFromJwt(token);
+    if (sessionId) {
+      const { data: blocked } = await client.rpc('is_impersonation_write_blocked', {
+        p_auth_session_id: sessionId,
+      });
+      if (blocked) {
+        return c.json({
+          error: 'Read-only while viewing as another user — return to admin to make changes.',
+          code: 'IMPERSONATION_READ_ONLY',
+        }, 403);
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------
   // Subscription + device gate.
   //
@@ -106,7 +155,6 @@ export async function requireUser(c: HonoContext): Promise<AuthResult | Response
   // directly, but it is strictly weaker than suspension and would not hold
   // against something talking to PostgREST with a raw JWT.
   // ---------------------------------------------------------------------
-  const isWrite = c.req.method !== 'GET' && c.req.method !== 'OPTIONS' && c.req.method !== 'HEAD';
   if (!isWrite || c.env.SUBSCRIPTION_GATE !== 'on' || WRITE_ALLOWED_PATHS.has(c.req.routePath)) {
     return { client, userId: data.user.id };
   }

@@ -52,8 +52,24 @@ export function buildApp() {
   // instead of configuring it once at module load.
   app.use('*', async (c, next) => {
     const allowedOrigin = c.env.ALLOWED_ORIGIN;
+    // Found during the 2026-08-04 security assessment: an unset
+    // ALLOWED_ORIGIN silently fell back to '*' (open to any origin). Not
+    // exploitable today — this API is Bearer-token, not cookie/credential
+    // based, so a wildcard alone can't forge another user's Authorization
+    // header — but it's a footgun for a future redeploy that drops the
+    // secret. Default to an empty allowlist instead: hono/cors only ever
+    // echoes back an origin present in the list, so an empty one means no
+    // browser cross-origin request ever gets a matching
+    // Access-Control-Allow-Origin, while same-origin and non-browser
+    // callers (curl, the mobile app) are completely unaffected — CORS is
+    // a browser-enforced check only. Logged loudly rather than failing the
+    // whole API closed, since an outage is a worse failure mode than a
+    // temporarily-locked-down CORS policy for a misconfigured secret.
+    if (!allowedOrigin) {
+      console.error('ALLOWED_ORIGIN is not set — defaulting to no cross-origin browser access allowed.');
+    }
     const middleware = cors({
-      origin: allowedOrigin ? allowedOrigin.split(',').map((o) => o.trim()) : '*',
+      origin: allowedOrigin ? allowedOrigin.split(',').map((o) => o.trim()) : [],
       // Custom response headers are invisible to browser JS unless listed
       // here — X-Total-Count backs paginated tables (Customers, Services).
       exposeHeaders: ['X-Total-Count'],

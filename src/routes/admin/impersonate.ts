@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Bindings } from '../../lib/supabase.js';
 import { createServiceClient, createAnonClient } from '../../lib/supabase.js';
 import { requirePlatformAdmin } from '../../lib/platformAuth.js';
+import { sessionIdFromJwt } from '../../lib/auth.js';
 import { sendPgError } from '../../lib/errors.js';
 import { validate } from '../../lib/validate.js';
 import { uuidParam } from '../../lib/schemas.js';
@@ -75,6 +76,24 @@ app.post('/api/admin/impersonate', validate('json', startBody), async (c) => {
   }
 
   const { session } = verifyData;
+
+  // See routes/impersonation.ts's identical block — records which specific
+  // auth session this token belongs to, so requireUser()'s
+  // is_impersonation_write_blocked() check can enforce read-only access
+  // server-side. Uses the platform admin's own client (auth.client, from
+  // requirePlatformAdmin() above), never the target's.
+  const targetSessionId = sessionIdFromJwt(session.access_token);
+  if (targetSessionId) {
+    const { error: recordError } = await auth.client.rpc('record_impersonation_auth_session', {
+      p_session_id: started.session_id,
+      p_auth_session_id: targetSessionId,
+    });
+    if (recordError) {
+      await auth.client.rpc('end_platform_impersonation', { p_session_id: started.session_id });
+      return c.json({ error: 'Could not start that session.' }, 500);
+    }
+  }
+
   return c.json({
     sessionId: started.session_id,
     accessToken: session.access_token,
