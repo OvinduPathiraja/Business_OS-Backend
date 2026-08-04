@@ -33,6 +33,10 @@ const recordPaymentBody = z.object({
   amount: z.number().positive(),
   method: z.enum(PAYMENT_METHODS),
   notes: z.string().optional().nullable(),
+  // Optional — when supplied, record_payment() posts the amount into that
+  // bank/cash balance too (mirrors payables.ts's bill-payment shape).
+  bankAccountId: z.string().uuid().optional().nullable(),
+  cashRegisterId: z.string().uuid().optional().nullable(),
 });
 
 const emailInvoiceBody = z.object({
@@ -269,12 +273,13 @@ app.get('/api/invoices/:id/payments', validate('param', uuidParam), async (c) =>
 
   const { data, error } = await auth.client
     .from('payments')
-    .select('id, invoice_id, amount, method, paid_at, notes')
+    .select('id, invoice_id, amount, method, bank_account_id, cash_register_id, paid_at, notes')
     .eq('invoice_id', c.req.valid('param').id)
     .order('paid_at', { ascending: false });
   if (error) return sendPgError(c, error);
   return c.json((data ?? []).map((r: any) => ({
-    id: r.id, invoiceId: r.invoice_id, amount: Number(r.amount), method: r.method, paidAt: r.paid_at, notes: r.notes,
+    id: r.id, invoiceId: r.invoice_id, amount: Number(r.amount), method: r.method,
+    bankAccountId: r.bank_account_id, cashRegisterId: r.cash_register_id, paidAt: r.paid_at, notes: r.notes,
   })));
 });
 
@@ -293,6 +298,8 @@ app.post('/api/invoices/:id/payments', validate('param', uuidParam), validate('j
     p_amount: body.amount,
     p_method: body.method,
     p_notes: body.notes || null,
+    p_bank_account_id: body.bankAccountId || null,
+    p_cash_register_id: body.cashRegisterId || null,
   });
   if (error) return sendPgError(c, error);
   return c.json({ amountPaid: data.amountPaid, status: data.status }, 201);

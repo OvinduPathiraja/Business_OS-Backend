@@ -7,6 +7,7 @@ import { validate } from '../lib/validate.js';
 import { uuidParam, bulkIdsBody, optionalDateRangeQuery } from '../lib/schemas.js';
 
 const ENTRY_DIRECTIONS = ['credit', 'debit'] as const;
+const LEDGER_ACCOUNT_TYPES = ['asset', 'liability', 'equity', 'income', 'expense'] as const;
 
 const ledgerBody = z.object({
   name: z.string().trim().min(1),
@@ -14,7 +15,14 @@ const ledgerBody = z.object({
   // A frontend icon name — unknown values fall back client-side, so only
   // length is constrained here.
   icon: z.string().trim().max(40).optional().nullable(),
+  // Nullable: existing ledgers may still be uncategorized, and an edit
+  // shouldn't be forced to pick one just to save an unrelated field.
+  accountType: z.enum(LEDGER_ACCOUNT_TYPES).nullable(),
 });
+
+// Creation requires a real category up front — only PATCH may leave/return a
+// ledger to null.
+const ledgerCreateBody = ledgerBody.extend({ accountType: z.enum(LEDGER_ACCOUNT_TYPES) });
 
 const entryCreateBody = z.object({
   direction: z.enum(ENTRY_DIRECTIONS),
@@ -23,7 +31,7 @@ const entryCreateBody = z.object({
   entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 
-const LEDGER_SELECT = 'id, organization_id, name, description, icon, created_at';
+const LEDGER_SELECT = 'id, organization_id, name, description, icon, account_type, created_at';
 const ENTRY_SELECT = 'id, organization_id, ledger_id, direction, amount, description, entry_date, created_by, created_at';
 
 function entryFromRow(row: any) {
@@ -63,26 +71,26 @@ app.get('/api/ledgers', async (c) => {
     const t = totals.get(row.id) ?? { count: 0, moneyIn: 0, moneyOut: 0 };
     return {
       id: row.id, organizationId: row.organization_id, name: row.name, description: row.description,
-      icon: row.icon, createdAt: row.created_at, entryCount: t.count, moneyIn: t.moneyIn,
-      moneyOut: t.moneyOut, net: t.moneyIn - t.moneyOut,
+      icon: row.icon, accountType: row.account_type, createdAt: row.created_at, entryCount: t.count,
+      moneyIn: t.moneyIn, moneyOut: t.moneyOut, net: t.moneyIn - t.moneyOut,
     };
   }));
 });
 
-app.post('/api/ledgers', validate('json', ledgerBody), async (c) => {
+app.post('/api/ledgers', validate('json', ledgerCreateBody), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
   const b = c.req.valid('json');
   const { data, error } = await auth.client
     .from('ledgers')
-    .insert({ organization_id: auth.organizationId, name: b.name, description: b.description || null, icon: b.icon || null })
+    .insert({ organization_id: auth.organizationId, name: b.name, description: b.description || null, icon: b.icon || null, account_type: b.accountType })
     .select(LEDGER_SELECT)
     .single();
   if (error) return sendPgError(c, error);
   return c.json({
     id: data.id, organizationId: data.organization_id, name: data.name, description: data.description,
-    icon: data.icon, createdAt: data.created_at, entryCount: 0, moneyIn: 0, moneyOut: 0, net: 0,
+    icon: data.icon, accountType: data.account_type, createdAt: data.created_at, entryCount: 0, moneyIn: 0, moneyOut: 0, net: 0,
   }, 201);
 });
 
@@ -93,12 +101,12 @@ app.patch('/api/ledgers/:id', validate('param', uuidParam), validate('json', led
   const b = c.req.valid('json');
   const { data, error } = await auth.client
     .from('ledgers')
-    .update({ name: b.name, description: b.description || null, icon: b.icon || null, updated_at: new Date().toISOString() })
+    .update({ name: b.name, description: b.description || null, icon: b.icon || null, account_type: b.accountType, updated_at: new Date().toISOString() })
     .eq('id', c.req.valid('param').id)
     .select(LEDGER_SELECT)
     .single();
   if (error) return sendPgError(c, error);
-  return c.json({ id: data.id, organizationId: data.organization_id, name: data.name, description: data.description, icon: data.icon, createdAt: data.created_at });
+  return c.json({ id: data.id, organizationId: data.organization_id, name: data.name, description: data.description, icon: data.icon, accountType: data.account_type, createdAt: data.created_at });
 });
 
 app.delete('/api/ledgers', validate('json', bulkIdsBody), async (c) => {

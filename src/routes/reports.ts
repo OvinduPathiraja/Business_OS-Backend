@@ -4,9 +4,10 @@ import type { Bindings } from '../lib/supabase.js';
 import { requireUser } from '../lib/auth.js';
 import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
-import { MAX_RANGE_DAYS, computePeriodStats, dateKey, parseDateKey, rangeDays, resolveRange } from '../lib/periodStats.js';
+import { MAX_RANGE_DAYS, computePeriodStats, dateKey, parseDateKey, rangeDays, resolveRange, startOfToday } from '../lib/periodStats.js';
 import { computeCashFlowStats } from '../lib/cashFlowStats.js';
 import { buildFinanceSeries } from '../lib/financeSeries.js';
+import { computeBalanceSheet } from '../lib/balanceSheetStats.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -103,7 +104,7 @@ app.get('/api/reports/finance', validate('query', financeReportQuery), async (c)
   const [revenueRes, expensesRes, ledgersRes, entriesRes, bankRes, cashRes] = await Promise.all([
     auth.client.from('invoices').select('total, tax, created_at').eq('status', 'paid').gte('created_at', fromIso).lt('created_at', toExclusiveIso),
     auth.client.from('bills').select('total, tax, category, created_at').eq('status', 'paid').gte('created_at', fromIso).lt('created_at', toExclusiveIso),
-    auth.client.from('ledgers').select('id, name'),
+    auth.client.from('ledgers').select('id, name, account_type'),
     auth.client.from('ledger_entries').select('ledger_id, direction, amount, entry_date').gte('entry_date', fromKey).lte('entry_date', toKey),
     auth.client.from('bank_accounts').select('current_balance').eq('status', 'active'),
     auth.client.from('cash_registers').select('current_balance').eq('status', 'active'),
@@ -132,8 +133,16 @@ app.get('/api/reports/finance', validate('query', financeReportQuery), async (c)
   });
   const ledgers = (ledgersRes.data ?? []).map((l: any) => {
     const t = ledgerTotals.get(l.id) ?? { moneyIn: 0, moneyOut: 0 };
-    return { id: l.id, name: l.name, moneyIn: t.moneyIn, moneyOut: t.moneyOut, net: t.moneyIn - t.moneyOut };
+    return { id: l.id, name: l.name, accountType: l.account_type, moneyIn: t.moneyIn, moneyOut: t.moneyOut, net: t.moneyIn - t.moneyOut };
   });
+
+  // Income Statement tab's figure: netProfit (invoices/bills only, unchanged
+  // above) plus the net contribution of any ledger explicitly tagged income
+  // or expense. Ledgers left uncategorized are excluded here (they still
+  // appear in the flat `ledgers` list above for the Overview tab).
+  const netIncome = (revenue - totalExpenses) + ledgers
+    .filter((l) => l.accountType === 'income' || l.accountType === 'expense')
+    .reduce((sum, l) => sum + l.net, 0);
 
   const bankBalance = (bankRes.data ?? []).reduce((sum, a: any) => sum + Number(a.current_balance), 0);
   const cashBalance = (cashRes.data ?? []).reduce((sum, r: any) => sum + Number(r.current_balance), 0);
@@ -150,6 +159,7 @@ app.get('/api/reports/finance', validate('query', financeReportQuery), async (c)
     revenue,
     totalExpenses,
     netProfit: revenue - totalExpenses,
+    netIncome,
     expenseBreakdown,
     granularity,
     series,
@@ -172,6 +182,27 @@ app.get('/api/reports/cash-flow', validate('query', reportsQuery), async (c) => 
   if (stats instanceof Response) return stats;
 
   return c.json({ from: dateKey(range.from), to: dateKey(range.to), ...stats });
+});
+
+const balanceSheetQuery = z.object({
+  asOf: z.string().regex(DATE_RE).optional(),
+});
+
+// A snapshot, not a period report — assets/liabilities/equity as of a single
+// date (default: today), cumulative since inception. Same no-explicit-
+// permission-gate pattern as /api/reports/finance: each block is scoped by
+// its own RLS policy, so a caller missing e.g. bank.view just gets zeros for
+// that block rather than a 403.
+app.get('/api/reports/balance-sheet', validate('query', balanceSheetQuery), async (c) => {
+  const auth = await requireUser(c);
+  if (auth instanceof Response) return auth;
+
+  const { asOf } = c.req.valid('query');
+  const asOfDate = asOf ? parseDateKey(asOf) : startOfToday();
+  const stats = await computeBalanceSheet(c, auth, asOfDate);
+  if (stats instanceof Response) return stats;
+
+  return c.json({ asOf: dateKey(asOfDate), ...stats });
 });
 
 export default app;
