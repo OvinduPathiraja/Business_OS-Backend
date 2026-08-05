@@ -4,6 +4,7 @@ import type { Bindings } from './lib/supabase.js';
 import { bearerTokenFrom } from './lib/supabase.js';
 import healthRoutes from './routes/health.js';
 import authRoutes from './routes/auth.js';
+import sessionRoutes from './routes/session.js';
 import meRoutes from './routes/me.js';
 import organizationsRoutes from './routes/organizations.js';
 import customersRoutes from './routes/customers.js';
@@ -73,6 +74,14 @@ export function buildApp() {
       // Custom response headers are invisible to browser JS unless listed
       // here — X-Total-Count backs paginated tables (Customers, Services).
       exposeHeaders: ['X-Total-Count'],
+      // Required for the httpOnly session cookies (M3 fix, 2026-08-04
+      // security assessment, routes/session.ts) to be sent/received
+      // cross-origin via fetch(credentials: 'include'). Safe alongside the
+      // allowlist above: hono/cors only ever echoes a listed origin, never
+      // '*', and credentials:true requires exactly that — it refuses to
+      // pair with a wildcard origin by spec, which this config already
+      // guarantees never happens.
+      credentials: true,
     });
     return middleware(c, next);
   });
@@ -108,6 +117,7 @@ export function buildApp() {
 
   app.route('/', healthRoutes);
   app.route('/', authRoutes);
+  app.route('/', sessionRoutes);
   app.route('/', meRoutes);
   app.route('/', organizationsRoutes);
   app.route('/', customersRoutes);

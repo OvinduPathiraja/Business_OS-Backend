@@ -1,5 +1,6 @@
 import type { Context } from 'hono';
-import { bearerTokenFrom, createUserClient, type Bindings } from './supabase.js';
+import { getCookie } from 'hono/cookie';
+import { bearerTokenFrom, createUserClient, ACCESS_COOKIE, type Bindings } from './supabase.js';
 
 export interface AuthResult {
   client: ReturnType<typeof createUserClient>;
@@ -87,7 +88,17 @@ const WRITE_ALLOWED_PATHS = new Set([
 // (the Postgres function every RLS policy resolves "the org" through)
 // validates it against real membership and fails closed for anything else.
 export async function requireUser(c: HonoContext): Promise<AuthResult | Response> {
-  const token = bearerTokenFrom(c.req.header('authorization'));
+  // Header first, unconditionally, falling back to the httpOnly session
+  // cookie (see lib/supabase.ts's ACCESS_COOKIE, set by routes/session.ts —
+  // the M3 fix, 2026-08-04 security assessment) only when no header is
+  // present. This order matters and must not be reversed: impersonation
+  // (shared/apiClient.ts) attaches its own Authorization header on every
+  // request while the admin's own real session cookie is simultaneously
+  // sitting on the same request — header-first is what keeps impersonation
+  // taking precedence over the admin's ambient cookie, exactly as the
+  // impersonation-write-block below already assumes. Mobile always sends a
+  // header and never a cookie, so this path is a no-op for mobile either way.
+  const token = bearerTokenFrom(c.req.header('authorization')) ?? getCookie(c, ACCESS_COOKIE) ?? null;
   if (!token) {
     return c.json({ error: 'Missing bearer token.' }, 401);
   }

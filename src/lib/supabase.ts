@@ -1,4 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
+import type { Context } from 'hono';
+import { setCookie, deleteCookie } from 'hono/cookie';
 
 // Workers has no process.env — config/secrets come from the `env` object
 // Cloudflare passes into the fetch handler, typed here and threaded through
@@ -33,6 +35,15 @@ export type Bindings = {
   // reconciling real subscriptions puts the entire customer base into
   // read-only in one deploy. Ship dark, reconcile, then flip the var.
   SUBSCRIPTION_GATE?: 'on' | 'off';
+  // The registrable domain the session cookies are scoped to — NOT the
+  // Worker's own exact hostname. businessos.*.workers.dev and
+  // businessosbackend.*.workers.dev share this as their eTLD+1 (verified
+  // directly against the real Public Suffix List: `workers.dev` itself is
+  // the PSL entry, not the account subdomain), so a cookie set with this as
+  // its Domain reaches both. `localhost` locally (no Secure, since plain
+  // http://localhost cookie behavior is inconsistent across browsers even
+  // though Chrome special-cases it as a secure context).
+  COOKIE_DOMAIN: string;
 };
 
 // Runs every query *as* the calling user (their JWT is forwarded as the
@@ -79,4 +90,58 @@ export function bearerTokenFrom(authHeader: string | undefined | null): string |
   if (!authHeader?.startsWith('Bearer ')) return null;
   const token = authHeader.slice('Bearer '.length).trim();
   return token || null;
+}
+
+type HonoContext = Context<{ Bindings: Bindings }>;
+
+// httpOnly session cookies — the M3 fix (2026-08-04 security assessment):
+// the web app's session used to live in localStorage, readable by any script
+// on the page. These two cookies are the only place a web session lives now;
+// requireUser() (lib/auth.ts) falls back to reading ACCESS_COOKIE when no
+// Authorization header is present. Never exposed in a JSON response body —
+// every route in routes/session.ts that mints or refreshes a session sets
+// these directly and returns no token in its body.
+export const ACCESS_COOKIE = 'sb-access-token';
+export const REFRESH_COOKIE = 'sb-refresh-token';
+
+// SameSite=Lax (not None) is correct here, not a weaker fallback: businessos
+// and businessosbackend share their registrable domain (see the Bindings
+// comment on COOKIE_DOMAIN above), so this is a same-site, cross-origin
+// relationship — Lax already allows normal cross-origin fetch() calls to
+// carry the cookie, it only withholds it on cross-SITE top-level navigation,
+// which is exactly the CSRF vector we want blocked.
+function cookieBaseOptions(env: Bindings) {
+  return {
+    domain: env.COOKIE_DOMAIN,
+    path: '/',
+    httpOnly: true,
+    sameSite: 'Lax' as const,
+    secure: env.COOKIE_DOMAIN !== 'localhost',
+  };
+}
+
+// accessExpiresIn/refreshExpiresIn are seconds, as Supabase's own session
+// object reports them (session.expires_in). Falls back to a conservative
+// 1 hour / 30 days if a caller ever has neither on hand (e.g. a
+// same-request refresh where only the new session is known).
+export function setSessionCookies(
+  c: HonoContext,
+  accessToken: string,
+  refreshToken: string,
+  accessExpiresIn?: number
+): void {
+  const opts = cookieBaseOptions(c.env);
+  setCookie(c, ACCESS_COOKIE, accessToken, { ...opts, maxAge: accessExpiresIn ?? 3600 });
+  // Refresh tokens are rotating/single-use in Supabase's default config —
+  // sized generously rather than to a specific known lifetime, since the
+  // cookie merely bounds how long an UNUSED refresh token can sit before
+  // this app stops offering it; Supabase's own expiry is still the real
+  // authority and a stale/already-used one simply fails at refresh time.
+  setCookie(c, REFRESH_COOKIE, refreshToken, { ...opts, maxAge: 60 * 60 * 24 * 30 });
+}
+
+export function clearSessionCookies(c: HonoContext): void {
+  const opts = cookieBaseOptions(c.env);
+  deleteCookie(c, ACCESS_COOKIE, opts);
+  deleteCookie(c, REFRESH_COOKIE, opts);
 }

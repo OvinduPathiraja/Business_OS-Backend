@@ -2,9 +2,12 @@
 # In production, set these with `wrangler secret put <NAME>` instead —
 # never commit real values, especially SUPABASE_SERVICE_ROLE_KEY.
 
-# Comma-separated list of allowed origins for CORS (the deployed app's URL).
-# Leave unset to allow all origins during local development.
-ALLOWED_ORIGIN=
+# Comma-separated list of allowed origins for CORS. Must be set for local
+# dev too, not just production — an unset value means NO cross-origin
+# browser request is ever allowed (see app.ts's CORS middleware), which
+# breaks the local frontend-to-backend calls this app needs to function at
+# all. The local frontend runs on :8081 (`npm run web`) by default.
+ALLOWED_ORIGIN=http://localhost:8081
 
 # Same Supabase project as the app's EXPO_PUBLIC_SUPABASE_URL/ANON_KEY.
 SUPABASE_URL=https://your-project-ref.supabase.co
@@ -21,6 +24,13 @@ SUPABASE_SERVICE_ROLE_KEY=
 # production this is a plain [vars] entry in wrangler.toml instead, since
 # it's not sensitive.
 PUBLIC_APP_URL=http://localhost:19006
+
+# The registrable domain the session cookies are scoped to. `localhost` is
+# correct for local dev even though the frontend/backend run on different
+# ports (:8081 / :8787) — cookie same-site scoping ignores port, only the
+# Domain attribute matters, and both are `localhost`. In production this is
+# a plain [vars] entry in wrangler.toml instead, since it's not sensitive.
+COOKIE_DOMAIN=localhost
 
 # Resend API key (resend.com) — sends the "you've been invited to join
 # <org>" notification email when an ALREADY-registered user is invited into

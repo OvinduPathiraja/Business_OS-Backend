@@ -24,6 +24,11 @@ period = 60
 # URL Configuration. EMAIL_FROM_ADDRESS must be on a domain verified with Resend.
 [vars]
 PUBLIC_APP_URL = "https://businessos.ovindupathiraja08.workers.dev"
+# The registrable domain shared by the frontend and backend Workers — see
+# the COOKIE_DOMAIN comment on the Bindings type in src/lib/supabase.ts for
+# why this is the account-level workers.dev subdomain, not either Worker's
+# own exact hostname.
+COOKIE_DOMAIN = "ovindupathiraja08.workers.dev"
 # Sandbox sender (no verified domain yet) — swap to an address on a verified
 # Resend domain once one exists; sandbox only delivers to the Resend
 # account's own registered email.

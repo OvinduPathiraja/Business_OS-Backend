@@ -39,7 +39,7 @@ app.get('/api/me', async (c) => {
   if (auth instanceof Response) return auth;
 
   const [profileResult, membershipsResult, activeOrgResult, subscriptionResult] = await Promise.all([
-    auth.client.from('profiles').select('id, full_name').eq('id', auth.userId).single(),
+    auth.client.from('profiles').select('id, full_name, email').eq('id', auth.userId).single(),
     auth.client.rpc('list_my_memberships'),
     auth.client.rpc('current_organization_id'),
     // Free — this was already three parallel calls. Returns null for a caller
@@ -96,6 +96,12 @@ app.get('/api/me', async (c) => {
   return c.json({
     id: profileResult.data.id,
     fullName: profileResult.data.full_name,
+    // Added for the M3 fix (2026-08-04 security assessment): the sidebar/
+    // header account displays used to fall back to supabase-js's own
+    // Session.user.email when fullName was empty — that session no longer
+    // exists client-side (httpOnly cookie), so the same fallback now needs
+    // this field instead.
+    email: profileResult.data.email,
     activeOrganizationId,
     memberships: memberships.map((m) => ({
       organizationId: m.organization_id,
