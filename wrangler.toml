@@ -14,6 +14,33 @@ namespace_id = "1001"
 limit = 300
 period = 60
 
+# H6 fix (2026-08-04 security assessment, closed 2026-08-06): a second,
+# dedicated limiter for POST /api/auth/login specifically, keyed by
+# normalized email rather than IP (Cloudflare's own guidance — many
+# legitimate users share an IP). This is the fast, cheap, always-on
+# volumetric guard; the precise 5-attempts/15-minute account lockout is the
+# KV-backed logic in src/lib/loginAttempts.ts below, since the Rate Limiting
+# binding's period is capped at 60s and can't express a 15-minute window on
+# its own. namespace_id just needs to be a positive integer unique to this
+# account, distinct from RATE_LIMITER's above.
+[[ratelimits]]
+name = "LOGIN_RATE_LIMITER"
+namespace_id = "1002"
+[ratelimits.simple]
+limit = 10
+period = 60
+
+# Backs src/lib/loginAttempts.ts's real 5-attempts/15-minute account lockout
+# — the server-side, unbypassable version of frontend/src/lib/
+# loginAttempts.ts's identical client-side policy. Eventually consistent
+# (Cloudflare KV's own model — up to ~60s propagation across edge
+# locations), which is an accepted tradeoff for slowing/deterring brute
+# force, not a claim of atomic exactness.
+[[kv_namespaces]]
+binding = "LOGIN_ATTEMPTS"
+id = "be17a34a2b094a12820b91e69e76fe43"
+preview_id = "b0be2145cb1f47b6b07473e995040d26"
+
 # SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY / ALLOWED_ORIGIN /
 # RESEND_API_KEY are all set via `wrangler secret put <NAME>` (production) or
 # `.dev.vars` (local dev, gitignored) — not here, so this file stays safe to commit.

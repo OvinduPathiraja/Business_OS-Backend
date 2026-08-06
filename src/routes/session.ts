@@ -6,6 +6,7 @@ import { requireUser } from '../lib/auth.js';
 import { validate } from '../lib/validate.js';
 import { getCookie } from 'hono/cookie';
 import { passwordIssues } from '../lib/passwordPolicy.js';
+import { getLockoutStatus, recordFailedAttempt, clearAttempts, formatLockoutRemaining } from '../lib/loginAttempts.js';
 
 // The M3 fix (2026-08-04 security assessment): the web session used to live
 // in localStorage (readable by any script on the page). These routes are
@@ -33,14 +34,44 @@ const loginBody = z.object({
 
 app.post('/api/auth/login', validate('json', loginBody), async (c) => {
   const { email, password } = c.req.valid('json');
+  const normalizedEmail = email.trim().toLowerCase();
+
+  // H6 fix (2026-08-04 security assessment, closed 2026-08-06): two layers,
+  // both keyed by email rather than IP (Cloudflare's own guidance — many
+  // legitimate users share an IP). First, the fast/cheap volumetric guard;
+  // second, the precise account lockout. Both run BEFORE Supabase is ever
+  // called, so a locked-out or rate-limited caller can't burn a real Auth
+  // request either.
+  const { success } = await c.env.LOGIN_RATE_LIMITER.limit({ key: normalizedEmail });
+  if (!success) {
+    return c.json({ error: 'Too many requests.', code: 'RATE_LIMITED' }, 429);
+  }
+
+  const lockout = await getLockoutStatus(c.env.LOGIN_ATTEMPTS, normalizedEmail);
+  if (lockout.locked) {
+    return c.json(
+      { error: `Too many failed attempts. Try again in ${formatLockoutRemaining(lockout.remainingMs)}.`, code: 'ACCOUNT_LOCKED' },
+      429
+    );
+  }
+
   const { data, error } = await createAnonClient(c.env).auth.signInWithPassword({ email, password });
   if (error || !data.session) {
+    const failure = await recordFailedAttempt(c.env.LOGIN_ATTEMPTS, normalizedEmail);
+    if (failure.locked) {
+      return c.json(
+        { error: `Too many failed attempts. Try again in ${formatLockoutRemaining(failure.remainingMs)}.`, code: 'ACCOUNT_LOCKED' },
+        429
+      );
+    }
     // Relay Supabase's own status/message rather than hardcoding one — this
     // is what preserves Login.tsx's existing lockout/error-copy handling
     // (getLockoutStatus/recordFailedAttempt) verbatim, since it reads the
     // same generic wording signInWithPassword always produced client-side.
     return c.json({ error: error?.message ?? 'Could not sign in.' }, (error?.status ?? 400) as 400);
   }
+
+  await clearAttempts(c.env.LOGIN_ATTEMPTS, normalizedEmail);
   setSessionCookies(c, data.session.access_token, data.session.refresh_token, data.session.expires_in);
   return c.json({ error: null });
 });

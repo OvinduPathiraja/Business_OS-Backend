@@ -44,6 +44,14 @@ export type Bindings = {
   // http://localhost cookie behavior is inconsistent across browsers even
   // though Chrome special-cases it as a secure context).
   COOKIE_DOMAIN: string;
+  // H6 fix (2026-08-04 security assessment, closed 2026-08-06): dedicated
+  // login brute-force protection, wired into POST /api/auth/login
+  // (routes/session.ts) only. LOGIN_RATE_LIMITER is the fast per-request
+  // volumetric guard (keyed by email, not IP — see wrangler.toml's comment);
+  // LOGIN_ATTEMPTS backs the real 5-attempts/15-minute account lockout in
+  // lib/loginAttempts.ts, since the rate limiter's period is capped at 60s.
+  LOGIN_RATE_LIMITER: RateLimit;
+  LOGIN_ATTEMPTS: KVNamespace;
 };
 
 // Runs every query *as* the calling user (their JWT is forwarded as the
