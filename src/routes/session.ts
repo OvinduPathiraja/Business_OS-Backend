@@ -5,6 +5,7 @@ import type { Bindings } from '../lib/supabase.js';
 import { requireUser } from '../lib/auth.js';
 import { validate } from '../lib/validate.js';
 import { getCookie } from 'hono/cookie';
+import { passwordIssues } from '../lib/passwordPolicy.js';
 
 // The M3 fix (2026-08-04 security assessment): the web session used to live
 // in localStorage (readable by any script on the page). These routes are
@@ -52,6 +53,16 @@ const signupBody = z.object({
 
 app.post('/api/auth/signup', validate('json', signupBody), async (c) => {
   const { email, password, fullName } = c.req.valid('json');
+
+  // H5 fix (2026-08-04 security assessment, closed 2026-08-06): this route
+  // is what makes server-side enforcement possible at all for regular
+  // signup — before the M3 migration, signUp() went straight from the
+  // browser to Supabase Auth, with nothing server-side to check against.
+  const issues = passwordIssues(password);
+  if (issues.length > 0) {
+    return c.json({ error: `Password needs ${issues.join(', ')}.` }, 400);
+  }
+
   const { data, error } = await createAnonClient(c.env).auth.signUp({
     email,
     password,
@@ -141,6 +152,16 @@ app.post('/api/auth/set-password', validate('json', setPasswordBody), async (c) 
   const auth = await requireUser(c);
   if (auth instanceof Response) return auth;
   const { password } = c.req.valid('json');
+
+  // H5 fix (2026-08-04 security assessment, closed 2026-08-06): this one
+  // route now serves every real password-setting flow in the app —
+  // invite-acceptance, recovery-completion, and Settings.tsx's self-service
+  // change-password — so this single check closes the gap everywhere.
+  const issues = passwordIssues(password);
+  if (issues.length > 0) {
+    return c.json({ error: `Password needs ${issues.join(', ')}.` }, 400);
+  }
+
   const { error } = await createServiceClient(c.env).auth.admin.updateUserById(auth.userId, { password });
   if (error) return c.json({ error: error.message }, (error.status ?? 400) as 400);
   return c.json({ error: null });

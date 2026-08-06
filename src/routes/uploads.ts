@@ -6,9 +6,8 @@ import { requireOrg } from '../lib/auth.js';
 // Where an uploaded image is used — decides its folder inside the shared
 // org-assets bucket and which permission the uploader needs. 'inventory'
 // covers a product photo attached from either the create or edit form, so
-// either permission is accepted. 'branding' is unused today (the org logo
-// and invoice/quotation/PO logos are still paste-a-URL fields) but costs
-// nothing to support now, ahead of pointing those at this same endpoint.
+// either permission is accepted. 'branding' covers the org logo and the
+// invoice/quotation/PO document logos.
 const UPLOAD_PURPOSES: Record<string, { permissions: string[] }> = {
   inventory: { permissions: ['inventory.add', 'inventory.update'] },
   branding: { permissions: ['settings.update'] },

@@ -7,6 +7,7 @@ import { sendPgError } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { uuidParam } from '../lib/schemas.js';
 import { sendInviteEmail } from '../lib/email.js';
+import { passwordIssues } from '../lib/passwordPolicy.js';
 
 const inviteBody = z.object({
   fullName: z.string().trim().min(1),
@@ -34,21 +35,6 @@ const usernameInviteBody = z.object({
   roleId: z.string().uuid(),
   branchIds: z.array(z.string().uuid()).optional(),
 });
-
-// Mirrors frontend/src/lib/passwordPolicy.ts — duplicated rather than
-// shared since the frontend and backend are separate packages here, but
-// kept in sync deliberately; this endpoint is the one place a password
-// reaches the server directly (every other password flow goes straight from
-// client to Supabase Auth).
-function passwordIssues(password: string): string[] {
-  const issues: string[] = [];
-  if (password.length < 8) issues.push('at least 8 characters');
-  if (!/[A-Z]/.test(password)) issues.push('an uppercase letter');
-  if (!/[a-z]/.test(password)) issues.push('a lowercase letter');
-  if (!/[0-9]/.test(password)) issues.push('a number');
-  if (!/[^A-Za-z0-9]/.test(password)) issues.push('a special character');
-  return issues;
-}
 
 const updateBody = z.object({
   phone: z.string().optional().nullable(),
