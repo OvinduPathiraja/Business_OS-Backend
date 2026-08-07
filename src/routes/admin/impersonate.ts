@@ -117,6 +117,15 @@ app.post('/api/admin/impersonate', validate('json', startBody), async (c) => {
 // expiring is what actually ends access either way, so a failure here is not
 // worth surfacing as an error. See end_platform_impersonation()'s own comment
 // for why it can't reuse end_impersonation_session().
+//
+// C2 residual gap (2026-08-06 security assessment) — same fix as
+// routes/impersonation.ts: ending the session previously only wrote
+// ended_at, leaving the actual JWT usable for reads until its natural
+// expiry. accessToken (the target's impersonation token — the same one this
+// route's own /api/admin/impersonate response and handoffUrl already hand
+// the operator) is read manually, not via validate('json', ...), so a
+// caller sending no body still parses cleanly. Scope 'local': revokes only
+// this specific impersonation session, never the target's own real session.
 app.post('/api/admin/impersonate/:id/end', validate('param', uuidParam), async (c) => {
   const auth = await requirePlatformAdmin(c, 'support');
   if (auth instanceof Response) return auth;
@@ -125,6 +134,15 @@ app.post('/api/admin/impersonate/:id/end', validate('param', uuidParam), async (
     p_session_id: c.req.valid('param').id,
   });
   if (error) return sendPgError(c, error);
+
+  const accessToken = await c.req
+    .json()
+    .then((body) => (typeof body?.accessToken === 'string' ? body.accessToken : null))
+    .catch(() => null);
+  if (accessToken) {
+    await createServiceClient(c.env).auth.admin.signOut(accessToken, 'local').catch(() => {});
+  }
+
   return c.body(null, 204);
 });
 

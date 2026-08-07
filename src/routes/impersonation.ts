@@ -88,12 +88,37 @@ app.post('/api/impersonate', validate('json', startBody), async (c) => {
 
 // Best-effort — see end_impersonation_session()'s own comment for why this
 // is a silent no-op rather than a 404 on an already-closed/unknown session.
+//
+// C2 residual gap (2026-08-06 security assessment): marking the session
+// ended here only ever wrote an ended_at timestamp — the underlying
+// Supabase-issued JWT was never actually revoked, so a captured impersonation
+// token kept working for reads until its natural ~1h expiry regardless of
+// "Return to admin." requireUser()'s is_impersonation_write_blocked() check
+// already closed the write half of this; this closes the read half by
+// revoking the specific impersonation session's own JWT via the Admin API.
+// Scope 'local' (not 'global'): the token's own session_id is what GoTrue
+// keys this signout on, so it revokes exactly the impersonation session and
+// nothing else — critically, NOT the target employee's own separate, real
+// login session, which 'global' would also tear down as a side effect.
+// accessToken is optional, read manually (not via validate('json', ...)) so
+// a caller that sends no body at all — every existing client, until the
+// frontend fix lands — still gets its request parsed rather than a hard 400
+// from an empty-body JSON parse failure.
 app.post('/api/impersonate/:id/end', validate('param', uuidParam), async (c) => {
   const auth = await requireUser(c);
   if (auth instanceof Response) return auth;
 
   const { error } = await auth.client.rpc('end_impersonation_session', { p_session_id: c.req.valid('param').id });
   if (error) return sendPgError(c, error);
+
+  const accessToken = await c.req
+    .json()
+    .then((body) => (typeof body?.accessToken === 'string' ? body.accessToken : null))
+    .catch(() => null);
+  if (accessToken) {
+    await createServiceClient(c.env).auth.admin.signOut(accessToken, 'local').catch(() => {});
+  }
+
   return c.body(null, 204);
 });
 
