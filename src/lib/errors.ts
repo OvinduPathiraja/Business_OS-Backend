@@ -6,7 +6,18 @@ import type { Context } from 'hono';
 // status code at every call site. `code` is passed through verbatim so the
 // frontend can still branch on it (e.g. 23P01 -> BookingConflictError).
 export function sendPgError(c: Context, error: { message: string; code?: string }): Response {
-  return c.json({ error: error.message, code: error.code }, statusForCode(error.code));
+  const { status, body } = pgErrorResult(error);
+  return c.json(body, status);
+}
+
+// Same mapping as sendPgError, as a plain {status, body} pair instead of a
+// Response — for callers like withIdempotency() (lib/idempotency.ts) that
+// need to inspect or cache the outcome before it becomes a Response.
+export function pgErrorResult(error: { message: string; code?: string }): {
+  status: 400 | 403 | 404 | 409 | 500;
+  body: { error: string; code: string | undefined };
+} {
+  return { status: statusForCode(error.code), body: { error: error.message, code: error.code } };
 }
 
 function statusForCode(code: string | undefined): 400 | 403 | 404 | 409 | 500 {

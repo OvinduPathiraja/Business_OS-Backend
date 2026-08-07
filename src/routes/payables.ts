@@ -2,9 +2,10 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Bindings } from '../lib/supabase.js';
 import { requireUser, requireOrg } from '../lib/auth.js';
-import { sendPgError } from '../lib/errors.js';
+import { sendPgError, pgErrorResult } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
+import { withIdempotency } from '../lib/idempotency.js';
 
 const BILL_STATUSES = ['draft', 'pending_approval', 'approved', 'partial', 'paid', 'void'] as const;
 const BILL_CATEGORIES = ['procurement', 'salaries', 'utilities', 'maintenance', 'marketing', 'operational', 'other'] as const;
@@ -178,20 +179,24 @@ app.get('/api/bills/:id/payments', validate('param', uuidParam), async (c) => {
 // decrements a bank account or cash register balance and logs a ledger
 // entry, gated on payables.update.
 app.post('/api/bills/:id/payments', validate('param', uuidParam), validate('json', recordPaymentBody), async (c) => {
-  const auth = await requireUser(c);
+  // requireOrg (not requireUser) so withIdempotency() has an organizationId
+  // to scope the claim by — H-NEW-1 fix, 2026-08-06 security assessment.
+  const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
   const body = c.req.valid('json');
-  const { data, error } = await auth.client.rpc('record_bill_payment', {
-    p_bill_id: c.req.valid('param').id,
-    p_amount: body.amount,
-    p_method: body.method,
-    p_bank_account_id: body.bankAccountId || null,
-    p_cash_register_id: body.cashRegisterId || null,
-    p_notes: body.notes || null,
+  return withIdempotency(c, auth, 'POST /api/bills/:id/payments', async () => {
+    const { data, error } = await auth.client.rpc('record_bill_payment', {
+      p_bill_id: c.req.valid('param').id,
+      p_amount: body.amount,
+      p_method: body.method,
+      p_bank_account_id: body.bankAccountId || null,
+      p_cash_register_id: body.cashRegisterId || null,
+      p_notes: body.notes || null,
+    });
+    if (error) return pgErrorResult(error);
+    return { status: 201, body: { amountPaid: data.amountPaid, status: data.status } };
   });
-  if (error) return sendPgError(c, error);
-  return c.json({ amountPaid: data.amountPaid, status: data.status }, 201);
 });
 
 // Wraps the create_quick_expense() RPC — the one-off "log a paid expense

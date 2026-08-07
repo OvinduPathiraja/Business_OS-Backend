@@ -2,9 +2,10 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Bindings } from '../lib/supabase.js';
 import { requireUser, requireOrg } from '../lib/auth.js';
-import { sendPgError } from '../lib/errors.js';
+import { sendPgError, pgErrorResult } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
+import { withIdempotency } from '../lib/idempotency.js';
 
 const PAYMENT_METHODS = ['card', 'cash', 'bank_transfer', 'wallet'] as const;
 
@@ -200,23 +201,33 @@ app.post('/api/orders', validate('json', completeOrderBody), async (c) => {
   const b = c.req.valid('json');
   const notes = b.items.map((it) => `${it.name} ×${it.quantity}`).join(', ');
 
-  const { data, error } = await auth.client.rpc('complete_order', {
-    p_customer_id: b.customerId,
-    p_customer_name: b.customerName,
-    p_subtotal: b.subtotal,
-    p_tax: b.tax,
-    p_total: b.total,
-    p_items: b.items.map((it) => ({ serviceId: it.serviceId ?? null, variantId: it.variantId ?? null, batchId: it.batchId ?? null, name: it.name, quantity: it.quantity, unitPrice: it.unitPrice })),
-    p_notes: notes,
-    p_payment_method: b.paymentMethod,
-    p_branch_id: b.branchId || null,
-    p_discount: b.discount ?? 0,
-    p_promotions: b.promotions ?? [],
-    p_card_type_id: b.cardTypeId || null,
-    p_charges: b.charges ?? [],
+  // H-NEW-1 fix (2026-08-06 security assessment): a network retry of this
+  // exact request (flaky POS connection, a cashier re-tapping "Pay") used to
+  // create a fully duplicate order — double stock decrement, double invoice,
+  // double payment. An Idempotency-Key header, when the client sends one,
+  // makes a retry replay the first attempt's response instead.
+  return withIdempotency(c, auth, 'POST /api/orders', async () => {
+    const { data, error } = await auth.client.rpc('complete_order', {
+      p_customer_id: b.customerId,
+      p_customer_name: b.customerName,
+      p_subtotal: b.subtotal,
+      p_tax: b.tax,
+      p_total: b.total,
+      p_items: b.items.map((it) => ({ serviceId: it.serviceId ?? null, variantId: it.variantId ?? null, batchId: it.batchId ?? null, name: it.name, quantity: it.quantity, unitPrice: it.unitPrice })),
+      p_notes: notes,
+      p_payment_method: b.paymentMethod,
+      p_branch_id: b.branchId || null,
+      p_discount: b.discount ?? 0,
+      p_promotions: b.promotions ?? [],
+      p_card_type_id: b.cardTypeId || null,
+      p_charges: b.charges ?? [],
+    });
+    if (error) return pgErrorResult(error);
+    return {
+      status: 201,
+      body: { orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber, branchId: data.branchId, tokenNumber: data.tokenNumber ?? null },
+    };
   });
-  if (error) return sendPgError(c, error);
-  return c.json({ orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber, branchId: data.branchId, tokenNumber: data.tokenNumber ?? null }, 201);
 });
 
 export default app;

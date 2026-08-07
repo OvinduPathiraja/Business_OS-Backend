@@ -2,10 +2,11 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Bindings } from '../lib/supabase.js';
 import { requireUser, requireOrg } from '../lib/auth.js';
-import { sendPgError } from '../lib/errors.js';
+import { sendPgError, pgErrorResult } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
 import { purchaseOrderTemplateSchema } from '../lib/purchaseOrderTemplateSchema.js';
+import { withIdempotency } from '../lib/idempotency.js';
 
 const PO_STATUSES = ['draft', 'ordered', 'partially_received', 'received', 'cancelled'] as const;
 // A plain client PATCH can only ever move a purchase order between these
@@ -246,21 +247,28 @@ app.delete('/api/purchase-orders', validate('json', bulkIdsBody), async (c) => {
 // allowed to increment stock and create a payable. Always an explicit
 // action; never triggered by any other purchase-order route.
 app.post('/api/purchase-orders/:id/receive', validate('param', uuidParam), validate('json', receiveBody), async (c) => {
-  const auth = await requireUser(c);
+  // requireOrg (not requireUser) so withIdempotency() has an organizationId
+  // to scope the claim by — H-NEW-1 fix, 2026-08-06 security assessment.
+  const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
   const b = c.req.valid('json');
-  const { data, error } = await auth.client.rpc('receive_purchase_order', {
-    p_purchase_order_id: c.req.valid('param').id,
-    p_branch_id: b.branchId || null,
-    p_payment_amount: b.paymentAmount ?? 0,
-    p_payment_method: b.paymentMethod || null,
-    p_bank_account_id: b.bankAccountId || null,
-    p_cash_register_id: b.cashRegisterId || null,
-    p_items: b.items && b.items.length > 0 ? b.items.map((it) => ({ itemId: it.itemId, quantityReceived: it.quantityReceived })) : null,
+  return withIdempotency(c, auth, 'POST /api/purchase-orders/:id/receive', async () => {
+    const { data, error } = await auth.client.rpc('receive_purchase_order', {
+      p_purchase_order_id: c.req.valid('param').id,
+      p_branch_id: b.branchId || null,
+      p_payment_amount: b.paymentAmount ?? 0,
+      p_payment_method: b.paymentMethod || null,
+      p_bank_account_id: b.bankAccountId || null,
+      p_cash_register_id: b.cashRegisterId || null,
+      p_items: b.items && b.items.length > 0 ? b.items.map((it) => ({ itemId: it.itemId, quantityReceived: it.quantityReceived })) : null,
+    });
+    if (error) return pgErrorResult(error);
+    return {
+      status: 201,
+      body: { billId: data.billId, billNumber: data.billNumber, purchaseOrderId: data.purchaseOrderId, branchId: data.branchId, status: data.status },
+    };
   });
-  if (error) return sendPgError(c, error);
-  return c.json({ billId: data.billId, billNumber: data.billNumber, purchaseOrderId: data.purchaseOrderId, branchId: data.branchId, status: data.status }, 201);
 });
 
 app.get('/api/organization/purchase-order-settings', async (c) => {

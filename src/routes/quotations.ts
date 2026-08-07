@@ -2,11 +2,12 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Bindings } from '../lib/supabase.js';
 import { requireUser, requireOrg } from '../lib/auth.js';
-import { sendPgError } from '../lib/errors.js';
+import { sendPgError, pgErrorResult } from '../lib/errors.js';
 import { validate } from '../lib/validate.js';
 import { paginationQuery, uuidParam, bulkIdsBody } from '../lib/schemas.js';
 import { quotationTemplateSchema } from '../lib/quotationTemplateSchema.js';
 import { sendInvoiceEmail } from '../lib/email.js';
+import { withIdempotency } from '../lib/idempotency.js';
 
 const QUOTATION_STATUSES = ['draft', 'sent', 'accepted', 'rejected', 'expired'] as const;
 const PAYMENT_METHODS = ['card', 'cash', 'bank_transfer', 'wallet'] as const;
@@ -245,17 +246,24 @@ app.delete('/api/quotations', validate('json', bulkIdsBody), async (c) => {
 // to produce a real order/invoice/payment/stock movement. Always an explicit
 // action; never triggered by any other quotation route.
 app.post('/api/quotations/:id/convert', validate('param', uuidParam), validate('json', convertBody), async (c) => {
-  const auth = await requireUser(c);
+  // requireOrg (not requireUser) so withIdempotency() has an organizationId
+  // to scope the claim by — H-NEW-1 fix, 2026-08-06 security assessment.
+  const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
   const b = c.req.valid('json');
-  const { data, error } = await auth.client.rpc('convert_quotation_to_order', {
-    p_quotation_id: c.req.valid('param').id,
-    p_payment_method: b.paymentMethod,
-    p_branch_id: b.branchId || null,
+  return withIdempotency(c, auth, 'POST /api/quotations/:id/convert', async () => {
+    const { data, error } = await auth.client.rpc('convert_quotation_to_order', {
+      p_quotation_id: c.req.valid('param').id,
+      p_payment_method: b.paymentMethod,
+      p_branch_id: b.branchId || null,
+    });
+    if (error) return pgErrorResult(error);
+    return {
+      status: 201,
+      body: { orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber, branchId: data.branchId, tokenNumber: data.tokenNumber ?? null },
+    };
   });
-  if (error) return sendPgError(c, error);
-  return c.json({ orderId: data.orderId, invoiceId: data.invoiceId, invoiceNumber: data.invoiceNumber, branchId: data.branchId, tokenNumber: data.tokenNumber ?? null }, 201);
 });
 
 app.get('/api/organization/quotation-settings', async (c) => {
