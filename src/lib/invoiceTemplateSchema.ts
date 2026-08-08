@@ -32,6 +32,7 @@ export const invoiceTemplateSchema = z.object({
   page: pageConfig,
   showQueueToken: z.boolean(),
   queueTokenVariant: z.enum(['block', 'banner', 'minimal']).optional(),
+  fontSize: z.enum(['small', 'medium', 'large']).optional(),
   sections: z.object({
     header: z.object({
       variant: z.enum(['classic', 'banner', 'centered', 'compact']),

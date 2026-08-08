@@ -30,6 +30,28 @@ const confirmBody = z.object({
 
 const bulkIdsBody = z.object({ ids: z.array(z.string().uuid()).min(1) });
 
+// The weekly schedule "Set availability" edits — mirrors
+// frontend/src/lib/availability.ts's DayAvailability/AvailabilitySession
+// shapes exactly, since the `days` jsonb column stores it verbatim.
+const availabilitySessionSchema = z.object({
+  id: z.string().min(1).max(60),
+  type: z.enum(['time', 'slot', 'both']),
+  startHour: z.number().min(0).max(24),
+  endHour: z.number().min(0).max(24),
+  slots: z.number().int().min(1).max(200),
+  durationMinutes: z.union([z.literal(15), z.literal(30), z.literal(45), z.literal(60)]),
+}).refine((s) => s.endHour > s.startHour, { message: "A session's end time must be after its start time." });
+
+const dayAvailabilitySchema = z.object({
+  dayOfWeek: z.number().int().min(0).max(6),
+  enabled: z.boolean(),
+  sessions: z.array(availabilitySessionSchema).max(12),
+});
+
+const availabilityBody = z.object({
+  days: z.array(dayAvailabilitySchema).length(7),
+});
+
 // Same shape as orders.ts's completeOrderBody — converting a booking creates
 // a real order exactly like a walk-in one does, just sourced from a booking.
 const lineItemSchema = z.object({
@@ -160,6 +182,33 @@ app.delete('/api/bookings', validate('json', bulkIdsBody), async (c) => {
   if (auth instanceof Response) return auth;
 
   const { error } = await auth.client.from('bookings').delete().in('id', c.req.valid('json').ids);
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
+// The weekly schedule "Set availability" edits — null `days` means the org
+// has never saved one (confirm_booking() then leaves bookings unrestricted).
+app.get('/api/organization/availability', async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const { data, error } = await auth.client
+    .from('organization_availability')
+    .select('days')
+    .eq('organization_id', auth.organizationId)
+    .maybeSingle();
+  if (error) return sendPgError(c, error);
+  return c.json({ days: data?.days ?? null });
+});
+
+app.patch('/api/organization/availability', validate('json', availabilityBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const { error } = await auth.client.from('organization_availability').upsert(
+    { organization_id: auth.organizationId, days: c.req.valid('json').days, updated_at: new Date().toISOString() },
+    { onConflict: 'organization_id' }
+  );
   if (error) return sendPgError(c, error);
   return c.body(null, 204);
 });

@@ -29,6 +29,7 @@ export const purchaseOrderTemplateSchema = z.object({
   version: z.literal(1),
   preset: z.enum(['classic', 'modern', 'minimal', 'custom']),
   page: pageConfig,
+  fontSize: z.enum(['small', 'medium', 'large']).optional(),
   sections: z.object({
     header: z.object({
       variant: z.enum(['classic', 'banner', 'centered', 'compact']),
