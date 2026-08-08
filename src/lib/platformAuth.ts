@@ -1,5 +1,6 @@
 import type { Context } from 'hono';
-import { bearerTokenFrom, createUserClient, createServiceClient, type Bindings } from './supabase.js';
+import { getCookie } from 'hono/cookie';
+import { bearerTokenFrom, createUserClient, createServiceClient, ACCESS_COOKIE, type Bindings } from './supabase.js';
 
 // Platform-operator authorization. This is the gate in front of every
 // /api/admin/* route — the routes behind it read across EVERY tenant, so this
@@ -56,7 +57,16 @@ export async function requirePlatformAdmin(
   c: HonoContext,
   minRole: PlatformRole = 'analyst',
 ): Promise<PlatformAuthResult | Response> {
-  const token = bearerTokenFrom(c.req.header('authorization'));
+  // 2026-08-08 assessment fix (finding #3, SECURITY_ASSESSMENT_2026-08-08.md):
+  // Business-os-superadmin now authenticates via the same httpOnly session
+  // cookie the M3 fix gave the product app (requireUser()'s pattern,
+  // mirrored here), instead of holding its own bearer token in localStorage.
+  // Header first, falling back to the cookie only when absent — same order
+  // as requireUser(), for the same reason: a future caller that attaches its
+  // own Authorization header (e.g. a script, or a future service-to-service
+  // caller) must take precedence over whatever ambient cookie happens to be
+  // sitting on the same request.
+  const token = bearerTokenFrom(c.req.header('authorization')) ?? getCookie(c, ACCESS_COOKIE) ?? null;
   if (!token) return c.json(DENIED, 403);
 
   // No X-Organization-Id is forwarded on purpose. An operator acts above

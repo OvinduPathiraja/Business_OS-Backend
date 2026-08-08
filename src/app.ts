@@ -86,6 +86,22 @@ export function buildApp() {
     return middleware(c, next);
   });
 
+  // Defense-in-depth response headers (F-1 fix, 2026-08-06 security
+  // assessment — confirmed live that neither origin sent any of these).
+  // No CSP here: this Worker only ever returns JSON, and CSP governs how a
+  // browser renders an HTML *document* — it has no effect on an API
+  // response and would be dead weight. The frontend's actual CSP lives in
+  // frontend/public/_headers, which is where framing/script/style
+  // restrictions actually matter. X-Content-Type-Options is still
+  // worthwhile here: it stops a browser from ever trying to sniff and
+  // render a JSON response as something else.
+  app.use('*', async (c, next) => {
+    await next();
+    c.header('X-Content-Type-Options', 'nosniff');
+    c.header('X-Frame-Options', 'DENY');
+    c.header('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+  });
+
   // Cloudflare's native Rate Limiting binding — edge-distributed by
   // default, correct across the whole Workers fleet with no shared store
   // needed (unlike the in-memory limiter this replaces, which only worked

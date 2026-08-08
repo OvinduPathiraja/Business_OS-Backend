@@ -126,11 +126,18 @@ app.post('/api/admin/impersonate', validate('json', startBody), async (c) => {
 // the operator) is read manually, not via validate('json', ...), so a
 // caller sending no body still parses cleanly. Scope 'local': revokes only
 // this specific impersonation session, never the target's own real session.
+//
+// Bound to the session actually being closed (2026-08-08 assessment,
+// finding #9, supabase/migrations/20260808050000_bind_impersonation_end_
+// accesstoken.sql) — a caller-supplied token that doesn't match the
+// auth_session_id this RPC just resolved is silently ignored rather than
+// handed to signOut(), so an already-privileged caller can no longer force
+// an arbitrary unrelated session to sign out through this route.
 app.post('/api/admin/impersonate/:id/end', validate('param', uuidParam), async (c) => {
   const auth = await requirePlatformAdmin(c, 'support');
   if (auth instanceof Response) return auth;
 
-  const { error } = await auth.client.rpc('end_platform_impersonation', {
+  const { data: authSessionId, error } = await auth.client.rpc('end_platform_impersonation', {
     p_session_id: c.req.valid('param').id,
   });
   if (error) return sendPgError(c, error);
@@ -139,7 +146,7 @@ app.post('/api/admin/impersonate/:id/end', validate('param', uuidParam), async (
     .json()
     .then((body) => (typeof body?.accessToken === 'string' ? body.accessToken : null))
     .catch(() => null);
-  if (accessToken) {
+  if (accessToken && authSessionId && sessionIdFromJwt(accessToken) === authSessionId) {
     await createServiceClient(c.env).auth.admin.signOut(accessToken, 'local').catch(() => {});
   }
 

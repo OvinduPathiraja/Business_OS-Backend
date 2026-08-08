@@ -39,13 +39,28 @@ app.get('/api/admin/users', validate('query', usersQuery), async (c) => {
     if (!userIdFilter.length) return c.json({ total: 0, users: [] });
   }
 
+  // Routed through platform_search_profile_ids() rather than a hand-built
+  // .or() filter string — 2026-08-08 assessment finding #2 (SECURITY_
+  // ASSESSMENT_2026-08-08.md): supabase-js does not escape .or()'s argument,
+  // so an unescaped q.search let a caller break out of the intended ilike
+  // value and append arbitrary column.operator.value filter clauses
+  // (live-confirmed). The RPC binds p_search as a real parameter instead.
+  if (q.search) {
+    const { data: matches, error: searchError } = await auth.client.rpc('platform_search_profile_ids', {
+      p_search: q.search,
+    });
+    if (searchError) return sendPgError(c, searchError);
+    const matchingIds = (matches ?? []).map((r: { id: string }) => r.id);
+    userIdFilter = userIdFilter ? userIdFilter.filter((id) => matchingIds.includes(id)) : matchingIds;
+    if (!userIdFilter || !userIdFilter.length) return c.json({ total: 0, users: [] });
+  }
+
   let query = auth.svc
     .from('profiles')
     .select('id, full_name, email, created_at, last_active_organization_id', { count: 'exact' })
     .order('created_at', { ascending: false })
     .range(q.offset, q.offset + q.limit - 1);
 
-  if (q.search) query = query.or(`full_name.ilike.%${q.search}%,email.ilike.%${q.search}%`);
   if (userIdFilter) query = query.in('id', userIdFilter);
 
   const { data, error, count } = await query;

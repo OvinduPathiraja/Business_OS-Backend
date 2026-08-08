@@ -108,14 +108,21 @@ app.post('/api/impersonate/:id/end', validate('param', uuidParam), async (c) => 
   const auth = await requireUser(c);
   if (auth instanceof Response) return auth;
 
-  const { error } = await auth.client.rpc('end_impersonation_session', { p_session_id: c.req.valid('param').id });
+  const { data: authSessionId, error } = await auth.client.rpc('end_impersonation_session', {
+    p_session_id: c.req.valid('param').id,
+  });
   if (error) return sendPgError(c, error);
 
   const accessToken = await c.req
     .json()
     .then((body) => (typeof body?.accessToken === 'string' ? body.accessToken : null))
     .catch(() => null);
-  if (accessToken) {
+  // Bound to the session actually being closed (2026-08-08 assessment,
+  // finding #9) — a caller-supplied token that doesn't match the auth_session_id
+  // this RPC just resolved is silently ignored rather than handed to
+  // signOut(), so an already-authenticated caller can no longer force an
+  // arbitrary unrelated session to sign out through this route.
+  if (accessToken && authSessionId && sessionIdFromJwt(accessToken) === authSessionId) {
     await createServiceClient(c.env).auth.admin.signOut(accessToken, 'local').catch(() => {});
   }
 

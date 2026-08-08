@@ -25,6 +25,23 @@ app.get('/api/admin/inquiries', validate('query', listQuery), async (c) => {
   if (auth instanceof Response) return auth;
 
   const q = c.req.valid('query');
+
+  // Routed through platform_search_inquiry_ids() rather than a hand-built
+  // .or() filter string — 2026-08-08 assessment finding #2 (SECURITY_
+  // ASSESSMENT_2026-08-08.md): supabase-js does not escape .or()'s argument,
+  // so an unescaped q.search let a caller break out of the intended ilike
+  // value and append arbitrary column.operator.value filter clauses
+  // (live-confirmed). The RPC binds p_search as a real parameter instead.
+  let searchIdFilter: string[] | null = null;
+  if (q.search) {
+    const { data: matches, error: searchError } = await auth.client.rpc('platform_search_inquiry_ids', {
+      p_search: q.search,
+    });
+    if (searchError) return sendPgError(c, searchError);
+    searchIdFilter = (matches ?? []).map((r: { id: string }) => r.id);
+    if (!searchIdFilter || !searchIdFilter.length) return c.json({ total: 0, counts: {}, inquiries: [] });
+  }
+
   let query = auth.client
     .from('platform_inquiries')
     .select('*', { count: 'exact' })
@@ -33,11 +50,7 @@ app.get('/api/admin/inquiries', validate('query', listQuery), async (c) => {
 
   if (q.status) query = query.eq('status', q.status);
   if (q.assignedTo) query = query.eq('assigned_to', q.assignedTo);
-  if (q.search) {
-    query = query.or(
-      `name.ilike.%${q.search}%,email.ilike.%${q.search}%,company.ilike.%${q.search}%,message.ilike.%${q.search}%`,
-    );
-  }
+  if (searchIdFilter) query = query.in('id', searchIdFilter);
 
   const { data, error, count } = await query;
   if (error) return sendPgError(c, error);
