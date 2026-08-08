@@ -53,6 +53,14 @@ const appliedChargeSchema = z.object({
   amount: z.number().min(0),
 });
 
+// One line of a (possibly split) payment — e.g. part cash, part card. Each
+// line can name its own card (only meaningful when method is 'card').
+const orderPaymentSchema = z.object({
+  method: z.enum(PAYMENT_METHODS),
+  amount: z.number().positive(),
+  cardTypeId: z.string().uuid().optional().nullable(),
+});
+
 const completeOrderBody = z.object({
   customerId: z.string().uuid().nullable(),
   customerName: z.string().trim().min(1),
@@ -61,10 +69,9 @@ const completeOrderBody = z.object({
   tax: z.number(),
   total: z.number(),
   items: z.array(lineItemSchema).min(1),
-  paymentMethod: z.enum(PAYMENT_METHODS),
+  payments: z.array(orderPaymentSchema).min(1),
   branchId: z.string().uuid().optional().nullable(),
   promotions: z.array(appliedPromotionSchema).optional(),
-  cardTypeId: z.string().uuid().optional().nullable(),
   charges: z.array(appliedChargeSchema).optional(),
 });
 
@@ -215,11 +222,10 @@ app.post('/api/orders', validate('json', completeOrderBody), async (c) => {
       p_total: b.total,
       p_items: b.items.map((it) => ({ serviceId: it.serviceId ?? null, variantId: it.variantId ?? null, batchId: it.batchId ?? null, name: it.name, quantity: it.quantity, unitPrice: it.unitPrice })),
       p_notes: notes,
-      p_payment_method: b.paymentMethod,
+      p_payments: b.payments.map((p) => ({ method: p.method, amount: p.amount, cardTypeId: p.cardTypeId ?? null })),
       p_branch_id: b.branchId || null,
       p_discount: b.discount ?? 0,
       p_promotions: b.promotions ?? [],
-      p_card_type_id: b.cardTypeId || null,
       p_charges: b.charges ?? [],
     });
     if (error) return pgErrorResult(error);
