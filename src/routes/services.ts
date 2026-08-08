@@ -12,7 +12,10 @@ const SORT_COLUMNS: Record<(typeof SORT_FIELDS)[number], string> = { name: 'name
 const listQuery = paginationQuery.extend({
   sort: z.enum(SORT_FIELDS).optional(),
   order: z.enum(['asc', 'desc']).optional().default('asc'),
+  categoryId: z.string().uuid().optional(),
 });
+
+const categoryBody = z.object({ name: z.string().trim().min(1) });
 
 const serviceBody = z.object({
   name: z.string().trim().min(1),
@@ -24,6 +27,7 @@ const serviceBody = z.object({
   tint: z.string().optional(),
   icon: z.string().optional(),
   barcode: z.string().optional().nullable(),
+  categoryId: z.string().uuid().optional().nullable(),
 });
 
 // The completion_* columns are the ORDER COMPLETE node's config. They're
@@ -32,12 +36,16 @@ const serviceBody = z.object({
 // a prop — and are written only through set_service_tasks(), never through
 // the PATCH below, which is a full replace that would clobber them.
 const SELECT =
-  'id, organization_id, name, description, price, duration_options, allows_time, allows_slot, tint, icon, barcode, completion_review_enabled, completion_reviewer_department_id, completion_instructions';
+  'id, organization_id, category_id, name, description, price, duration_options, allows_time, allows_slot, tint, icon, barcode, completion_review_enabled, completion_reviewer_department_id, completion_instructions, ' +
+  'service_categories(name)';
 
 function fromRow(row: any) {
+  const cat = Array.isArray(row.service_categories) ? row.service_categories[0] : row.service_categories;
   return {
     id: row.id,
     organizationId: row.organization_id,
+    categoryId: row.category_id,
+    categoryName: cat?.name ?? null,
     name: row.name,
     description: row.description,
     price: Number(row.price),
@@ -55,16 +63,65 @@ function fromRow(row: any) {
 
 const app = new Hono<{ Bindings: Bindings }>();
 
+app.get('/api/services/categories', async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const { data, error } = await auth.client
+    .from('service_categories')
+    .select('id, organization_id, name')
+    .order('name', { ascending: true });
+  if (error) return sendPgError(c, error);
+  return c.json((data ?? []).map((r: any) => ({ id: r.id, organizationId: r.organization_id, name: r.name })));
+});
+
+app.post('/api/services/categories', validate('json', categoryBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const { data, error } = await auth.client
+    .from('service_categories')
+    .insert({ organization_id: auth.organizationId, name: c.req.valid('json').name })
+    .select('id, organization_id, name')
+    .single();
+  if (error) return sendPgError(c, error);
+  return c.json({ id: data.id, organizationId: data.organization_id, name: data.name }, 201);
+});
+
+app.patch('/api/services/categories/:id', validate('param', uuidParam), validate('json', categoryBody), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const { data, error } = await auth.client
+    .from('service_categories')
+    .update({ name: c.req.valid('json').name })
+    .eq('id', c.req.valid('param').id)
+    .select('id, organization_id, name')
+    .single();
+  if (error) return sendPgError(c, error);
+  return c.json({ id: data.id, organizationId: data.organization_id, name: data.name });
+});
+
+app.delete('/api/services/categories/:id', validate('param', uuidParam), async (c) => {
+  const auth = await requireOrg(c);
+  if (auth instanceof Response) return auth;
+
+  const { error } = await auth.client.from('service_categories').delete().eq('id', c.req.valid('param').id);
+  if (error) return sendPgError(c, error);
+  return c.body(null, 204);
+});
+
 app.get('/api/services', validate('query', listQuery), async (c) => {
   const auth = await requireOrg(c);
   if (auth instanceof Response) return auth;
 
-  const { search, sort, order, limit, offset } = c.req.valid('query');
+  const { search, sort, order, categoryId, limit, offset } = c.req.valid('query');
   let query = auth.client.from('services').select(SELECT, { count: 'exact' })
     .order(sort ? SORT_COLUMNS[sort] : 'name', { ascending: sort ? order === 'asc' : true });
   // Matches on barcode too so a scanned code (New Order / Services scan
   // flow) surfaces the right row without a separate lookup endpoint.
   if (search) query = query.or(`name.ilike.%${search}%,barcode.ilike.%${search}%`);
+  if (categoryId) query = query.eq('category_id', categoryId);
   query = query.range(offset, offset + limit - 1);
 
   const { data, error, count } = await query;
@@ -82,6 +139,7 @@ app.post('/api/services', validate('json', serviceBody), async (c) => {
     .from('services')
     .insert({
       organization_id: auth.organizationId,
+      category_id: b.categoryId || null,
       name: b.name,
       description: b.description || null,
       price: b.price ?? 0,
@@ -106,6 +164,7 @@ app.patch('/api/services/:id', validate('param', uuidParam), validate('json', se
   const { data, error } = await auth.client
     .from('services')
     .update({
+      category_id: b.categoryId || null,
       name: b.name,
       description: b.description || null,
       price: b.price ?? 0,

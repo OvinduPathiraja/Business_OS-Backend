@@ -16,9 +16,12 @@ const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const targetSchema = z.object({
   serviceId: z.string().uuid().optional(),
   variantId: z.string().uuid().optional(),
-}).refine((t) => Boolean(t.serviceId) !== Boolean(t.variantId), {
-  message: 'Each target must have exactly one of serviceId or variantId.',
-});
+  serviceCategoryId: z.string().uuid().optional(),
+  inventoryCategoryId: z.string().uuid().optional(),
+}).refine(
+  (t) => [t.serviceId, t.variantId, t.serviceCategoryId, t.inventoryCategoryId].filter(Boolean).length === 1,
+  { message: 'Each target must have exactly one of serviceId, variantId, serviceCategoryId, or inventoryCategoryId.' }
+);
 
 // Mirrors the DB check constraints (promotions_reward_shape etc.) so a
 // misconfigured promotion is a 400, not a raw Postgres check violation.
@@ -78,7 +81,7 @@ const activeQuery = z.object({ date: isoDate.optional() });
 const SELECT =
   'id, organization_id, name, scope, reward_type, percent_off, amount_off, buy_qty, get_qty, ' +
   'starts_on, ends_on, min_qty, min_subtotal, payment_method, card_type_id, active, created_at, ' +
-  'promotion_targets(service_id, variant_id)';
+  'promotion_targets(service_id, variant_id, service_category_id, inventory_category_id)';
 
 const CARD_TYPE_SELECT = 'id, organization_id, name, status, created_at';
 
@@ -102,7 +105,10 @@ function fromRow(row: any) {
     cardTypeId: row.card_type_id,
     active: row.active,
     createdAt: row.created_at,
-    targets: targets.map((t) => ({ serviceId: t.service_id, variantId: t.variant_id })),
+    targets: targets.map((t) => ({
+      serviceId: t.service_id, variantId: t.variant_id,
+      serviceCategoryId: t.service_category_id, inventoryCategoryId: t.inventory_category_id,
+    })),
   };
 }
 
@@ -144,6 +150,8 @@ async function replaceTargets(client: any, organizationId: string, promotionId: 
       promotion_id: promotionId,
       service_id: t.serviceId ?? null,
       variant_id: t.variantId ?? null,
+      service_category_id: t.serviceCategoryId ?? null,
+      inventory_category_id: t.inventoryCategoryId ?? null,
     }))
   );
   return ins.error;
@@ -263,7 +271,13 @@ app.post('/api/promotions', validate('json', promotionBody), async (c) => {
   const targetsError = await replaceTargets(auth.client, auth.organizationId, row.id, body);
   if (targetsError) return sendPgError(c, targetsError);
 
-  return c.json(fromRow({ ...row, promotion_targets: (body.targets ?? []).map((t) => ({ service_id: t.serviceId ?? null, variant_id: t.variantId ?? null })) }), 201);
+  return c.json(fromRow({
+    ...row,
+    promotion_targets: (body.targets ?? []).map((t) => ({
+      service_id: t.serviceId ?? null, variant_id: t.variantId ?? null,
+      service_category_id: t.serviceCategoryId ?? null, inventory_category_id: t.inventoryCategoryId ?? null,
+    })),
+  }), 201);
 });
 
 app.patch('/api/promotions/:id', validate('param', uuidParam), validate('json', promotionBody), async (c) => {
@@ -283,7 +297,13 @@ app.patch('/api/promotions/:id', validate('param', uuidParam), validate('json', 
   const targetsError = await replaceTargets(auth.client, auth.organizationId, row.id, body);
   if (targetsError) return sendPgError(c, targetsError);
 
-  return c.json(fromRow({ ...row, promotion_targets: (body.scope === 'items' ? body.targets ?? [] : []).map((t) => ({ service_id: t.serviceId ?? null, variant_id: t.variantId ?? null })) }));
+  return c.json(fromRow({
+    ...row,
+    promotion_targets: (body.scope === 'items' ? body.targets ?? [] : []).map((t) => ({
+      service_id: t.serviceId ?? null, variant_id: t.variantId ?? null,
+      service_category_id: t.serviceCategoryId ?? null, inventory_category_id: t.inventoryCategoryId ?? null,
+    })),
+  }));
 });
 
 app.delete('/api/promotions', validate('json', bulkIdsBody), async (c) => {
