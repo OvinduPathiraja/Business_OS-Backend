@@ -210,6 +210,13 @@ app.post('/api/employees/invites', validate('json', inviteBody), async (c) => {
     .maybeSingle();
   if (lookupError) return sendPgError(c, lookupError);
 
+  // Fetched once, up front, since both branches below need it — the
+  // existing-user branch for sendInviteEmail's plain-text notification, and
+  // the new-account branch for the invite email template's
+  // {{ .Data.organization_name }} (supabase/templates/invite.html).
+  const { data: org } = await auth.client.from('organizations').select('name').eq('id', auth.organizationId).single();
+  const orgName = org?.name ?? 'your team';
+
   if (existing) {
     const { error: rpcError } = await auth.client.rpc('invite_existing_user_to_organization', {
       p_target_user_id: existing.id,
@@ -220,10 +227,9 @@ app.post('/api/employees/invites', validate('json', inviteBody), async (c) => {
     });
     if (rpcError) return sendPgError(c, rpcError);
 
-    const { data: org } = await auth.client.from('organizations').select('name').eq('id', auth.organizationId).single();
     let emailSent = true;
     try {
-      await sendInviteEmail(c.env, { to: b.email, orgName: org?.name ?? 'your team', appUrl: c.env.PUBLIC_APP_URL });
+      await sendInviteEmail(c.env, { to: b.email, orgName, appUrl: c.env.PUBLIC_APP_URL });
     } catch {
       // Non-critical — the pending invite already exists and is visible
       // in-app regardless of whether the notification email went out.
@@ -259,7 +265,7 @@ app.post('/api/employees/invites', validate('json', inviteBody), async (c) => {
   }
 
   const { error: inviteError } = await svc.auth.admin.inviteUserByEmail(b.email, {
-    data: { full_name: b.fullName },
+    data: { full_name: b.fullName, organization_name: orgName },
     redirectTo: c.env.PUBLIC_APP_URL,
   });
   if (inviteError) {

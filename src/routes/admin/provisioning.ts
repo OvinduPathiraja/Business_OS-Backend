@@ -60,7 +60,7 @@ app.post('/api/admin/provision', validate('json', provisionBody), async (c) => {
     userId = existing.id as string;
   } else {
     const { data: invited, error: inviteError } = await svc.auth.admin.inviteUserByEmail(b.email, {
-      data: { full_name: b.fullName },
+      data: { full_name: b.fullName, organization_name: b.organizationName },
       redirectTo: c.env.PUBLIC_APP_URL,
     });
     if (inviteError || !invited?.user) {
